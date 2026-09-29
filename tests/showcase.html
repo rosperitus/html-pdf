@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>html_pdf: демонстрация возможностей</title>
+<style>
+/* Страница: размер, поля, колонтитулы */
+@page {
+  size: A4;
+  margin: 18mm 16mm 20mm;
+  @top-left { content: "html_pdf — демонстрация"; font-size: 8pt; color: #8a94a6 }
+  @top-right { content: "Все поддерживаемые возможности"; font-size: 8pt; color: #8a94a6; font-style: italic }
+  @bottom-center { content: "Страница " counter(page) " из " counter(pages); font-size: 8pt; color: #555 }
+}
+@media screen { body { background: black } }         /* не применяется при печати */
+@media print { .only-print { color: #0a7d32 } }       /* применяется */
+
+html { font-size: 10pt }
+body { margin: 0; font-family: "Noto Sans"; line-height: 1.45; color: #1f2430 }
+h1, h2, h3, h4, h5, h6 { color: #1a4d8f; line-height: 1.2 }
+h1 { font-size: 22pt; margin: 0 0 4pt }
+h2 { font-size: 15pt; margin: 18pt 0 6pt; padding-bottom: 3pt; border-bottom: 1.5pt solid #1a4d8f }
+h3 { font-size: 12pt; margin: 12pt 0 4pt }
+p { margin: 0 0 6pt }
+.lead { font-size: 11pt; color: #444 }
+.new-page { break-before: page }
+.note { background: #eef4ff; border-left: 4pt solid #1a4d8f; padding: 6pt 10pt; margin: 8pt 0 }
+.warn { background: #fff6dc; border: 1px solid #e0a800; padding: 6pt 10pt; margin: 8pt 0; break-inside: avoid }
+.muted { color: gray }
+code, kbd, samp, tt, pre { font-family: "Noto Sans Mono"; font-size: 9pt }
+code { background: #f1f3f6 }
+kbd { background: #e8e8e8; border: 1px solid #bbb }
+pre { background: #f6f8fa; border: 1px solid #d0d7de; padding: 6pt 8pt; margin: 6pt 0; line-height: 1.35 }
+mark { background: yellow }
+.grid td { vertical-align: top; padding: 0 10pt 0 0 }
+.swatch { width: 100%; height: 14pt; margin: 2pt 0 }
+
+/* Селекторы: потомок, дочерний, класс, id, группа, !important */
+#selectors p { margin: 2pt 0 }
+#selectors .tag { color: #b8006b }
+#selectors > .child { font-weight: bold }
+.a .b { text-decoration: underline }
+.imp { color: red !important }
+.imp { color: green }
+.inherit-demo { color: #7a3fb0; border: 1px solid #7a3fb0; padding: 4pt }
+.inherit-demo span { color: black }
+.inherit-demo span.back { color: inherit }
+
+/* Блочная модель */
+.box { background: #eef4ff; border: 2pt solid #1a4d8f; padding: 6pt; margin: 6pt 0 }
+.centered { width: 60%; margin: 6pt auto; text-align: center }
+.border-box { box-sizing: border-box; width: 50%; padding: 10pt; border: 4pt solid #0a7d32; background: #e9f7ee }
+.content-box { width: 50%; padding: 10pt; border: 4pt solid #b8006b; background: #fbe9f3 }
+.fixed-height { height: 40pt; background: #f1f3f6; border: 1px dashed #999 }
+
+/* Таблицы */
+table.data { width: 100%; border-collapse: collapse; margin: 6pt 0 }
+.data caption { font-weight: bold; margin-bottom: 4pt }
+.data th { background: #1a4d8f; color: white; padding: 4pt 6pt; border: 1px solid #1a4d8f }
+.data td { padding: 3pt 6pt; border: 1px solid #c3cad6 }
+.data tr.odd td { background: #f3f6fb }
+.data tfoot td { font-weight: bold; background: #e4ebf5 }
+.num { text-align: right }
+table.separate { border: 1px solid #999; border-spacing: 4pt; margin: 6pt 0 }
+.separate td { border: 1px solid #1a4d8f; padding: 4pt; background: #eef4ff }
+.valign td { height: 36pt; border: 1px solid #999; padding: 2pt 6pt }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>html_pdf: все поддерживаемые возможности</h1>
+  <p class="lead">Эта страница проверяет каждую поддерживаемую возможность библиотеки: теги,
+  селекторы, свойства CSS, таблицы, списки, картинки и разбиение на страницы.
+  Колонтитулы сверху и нумерация снизу заданы через <code>@page</code>.</p>
+</header>
+
+<main>
+<article>
+
+<h2>1. Заголовки</h2>
+<h1>Заголовок h1</h1>
+<h2 style="border: none; margin-top: 4pt">Заголовок h2</h2>
+<h3>Заголовок h3</h3>
+<h4>Заголовок h4</h4>
+<h5>Заголовок h5</h5>
+<h6>Заголовок h6</h6>
+
+<h2>2. Текст и строчные элементы</h2>
+<p><b>b — жирный</b>, <strong>strong — важный</strong>, <i>i — курсив</i>, <em>em — акцент</em>,
+<b><i>жирный курсив</i></b>, <u>u — подчёркнутый</u>, <ins>ins — вставка</ins>,
+<s>s — зачёркнутый</s>, <del>del — удалено</del>, <strike>strike</strike>,
+<cite>cite — источник</cite>, <var>var — переменная</var>, <dfn>dfn — определение</dfn>,
+<a href="https://example.com">a — ссылка</a>, <mark>mark — выделение</mark>,
+<code>code — код</code>, <kbd>Ctrl+C</kbd>, <samp>samp — вывод</samp>, <tt>tt — телетайп</tt>,
+<span style="background: #ffd6d6">span с фоном</span>, <span style="color: #0a7d32">span с цветом</span>.</p>
+
+<p>Перевод строки через br:<br>вторая строка<br>третья строка.</p>
+<p>Мнемоники: &amp; &lt; &gt; &quot; &laquo;ёлочки&raquo; &mdash; тире, &ndash; короткое, &hellip;
+&copy; &reg; &trade; &euro; &numero;&nbsp;42 &deg; &plusmn; &times; &divide; &frac12; &larr; &rarr;
+&#1071; &#x42F; &sect; &para;</p>
+
+<h3>Выравнивание и отступ первой строки</h3>
+<p style="text-align: left">text-align: left — текст прижат к левому краю.</p>
+<p style="text-align: center">text-align: center — текст по центру.</p>
+<p style="text-align: right">text-align: right — текст прижат к правому краю.</p>
+<p style="text-align: justify; text-indent: 1.5em">text-align: justify и text-indent: 1.5em.
+Съешь же ещё этих мягких французских булок, да выпей чаю. Съешь же ещё этих мягких французских булок,
+да выпей чаю. Каждая строка, кроме последней, растягивается до правого края, а первая начинается с отступа.</p>
+
+<h3>Шрифт: размер, насыщенность, начертание, межстрочный интервал</h3>
+<p style="font-size: 8pt">font-size: 8pt</p>
+<p style="font-size: small">font-size: small</p>
+<p style="font-size: 1.3em">font-size: 1.3em</p>
+<p style="font-size: 150%">font-size: 150%</p>
+<p style="font: italic bold 12pt/1.8 'Noto Sans'">font: italic bold 12pt/1.8 — шорткат со всеми частями, увеличенный межстрочный интервал.
+Вторая строка показывает интервал.</p>
+<p style="font-weight: 700">font-weight: 700</p>
+<p style="font-style: italic">font-style: italic</p>
+<p style="line-height: 2">line-height: 2 — двойной интервал. Съешь же ещё этих мягких французских булок, да выпей чаю, съешь же ещё этих мягких французских булок.</p>
+
+<h3>Цвета</h3>
+<div class="grid"><table><tr>
+<td><div class="swatch" style="background: #1a4d8f"></div>#1a4d8f</td>
+<td><div class="swatch" style="background: #0a7"></div>#0a7</td>
+<td><div class="swatch" style="background: rgb(184, 0, 107)"></div>rgb()</td>
+<td><div class="swatch" style="background: rgba(0 0 0 / 40%)"></div>rgba()</td>
+<td><div class="swatch" style="background: rebeccapurple"></div>rebeccapurple</td>
+<td><div class="swatch" style="background: gold"></div>gold</td>
+</tr></table></div>
+
+<h3>Пробелы: white-space</h3>
+<p>normal: слова    с    лишними     пробелами
+и переводами строк схлопываются.</p>
+<p style="white-space: pre-line">pre-line: пробелы    схлопываются,
+а переводы строк
+сохраняются.</p>
+<p style="white-space: nowrap; font-size: 8pt">nowrap: эта строка не переносится, даже если не помещается в ширину страницы.</p>
+<pre>pre: отступы и    пробелы сохраняются
+fn main() {
+    println!("Привет, PDF!");
+}</pre>
+<p>Длинное слово без пробелов разбивается посимвольно, чтобы не вылезти за край:
+Оченьдлинноесловобезпробеловкотороенепомещаетсявстрокуидолжноразбитьсяначастичтобынеуйтизакрайстраницыоченьдлинное</p>
+
+<h2>3. Блоки</h2>
+<blockquote>blockquote — цитата с отступами по умолчанию. «Лучший код — тот, который не написан».</blockquote>
+<address>address — ООО «Ромашка», 123456, Москва, ул. Примерная, 1</address>
+<center>center — старый тег выравнивания по центру</center>
+<div class="note">div.note — блок с фоном, левой рамкой и внутренними отступами.</div>
+<section><p>section, article, main, header, footer, nav, aside — блочные элементы HTML5.</p></section>
+<aside class="muted"><p>aside — боковая заметка, здесь серым цветом.</p></aside>
+<nav><p><a href="#a">nav: ссылка 1</a> · <a href="#b">ссылка 2</a> · <a href="#c">ссылка 3</a></p></nav>
+<p>Горизонтальная линия hr:</p>
+<hr>
+<p class="only-print">Этот абзац зелёный: правило из @media print применилось, а из @media screen — нет.</p>
+<p style="display: none">display: none — этого текста в PDF нет.</p>
+
+<h3>Блочная модель</h3>
+<div class="box">margin, border, padding, background.</div>
+<div class="box centered">width: 60% и margin: auto — блок по центру.</div>
+<div class="border-box">box-sizing: border-box, width: 50% — ширина включает рамку и поля.</div>
+<div class="content-box">box-sizing: content-box, width: 50% — рамка и поля добавляются к ширине.</div>
+<div class="fixed-height">height: 40pt — фиксированная высота.</div>
+<div style="margin-bottom: 20pt; background: #f1f3f6">margin-bottom: 20pt</div>
+<div style="margin-top: 30pt; background: #f1f3f6">margin-top: 30pt — соседние отступы схлопываются в 30pt, а не 50pt.</div>
+
+<h3>Селекторы и каскад</h3>
+<div id="selectors">
+  <p class="child">#selectors &gt; .child — дочерний селектор, жирный.</p>
+  <div><p class="child">.child внутри вложенного div — не дочерний, поэтому обычный.</p></div>
+  <p>Селектор по классу: <span class="tag">.tag</span>, по id и потомку.</p>
+  <p class="a"><span class="b">.a .b — подчёркнуто через селектор потомка.</span></p>
+  <p class="imp">!important сильнее более позднего правила: этот текст красный.</p>
+  <p style="color: #b8006b">Атрибут style сильнее селекторов.</p>
+</div>
+<div class="inherit-demo">Цвет наследуется: <span>span с color: black</span>,
+<span class="back">span с color: inherit — снова фиолетовый</span>.</div>
+
+<h2 class="new-page">4. Списки</h2>
+<div class="grid"><table><tr><td>
+<ul>
+  <li>ul — маркированный список</li>
+  <li>Вложенные уровни:
+    <ul>
+      <li>второй уровень</li>
+      <li>ещё пункт
+        <ul><li>третий уровень</li></ul>
+      </li>
+    </ul>
+  </li>
+  <li style="list-style-type: square">list-style-type: square</li>
+  <li style="list-style: none">list-style: none — без маркера</li>
+</ul>
+</td><td>
+<ol>
+  <li>ol — нумерованный</li>
+  <li>второй пункт</li>
+  <li value="10">value="10"</li>
+  <li>продолжает с 11</li>
+</ol>
+<ol start="5" style="list-style-type: upper-roman">
+  <li>start="5", upper-roman</li>
+  <li>VI</li>
+</ol>
+<ol style="list-style-type: lower-alpha">
+  <li>lower-alpha</li>
+  <li>b</li>
+</ol>
+<ol style="list-style-type: lower-roman"><li>lower-roman</li><li>ii</li></ol>
+</td></tr></table></div>
+
+<h3>Список определений</h3>
+<dl>
+  <dt>dt — термин</dt>
+  <dd>dd — определение с отступом слева.</dd>
+  <dt>HTML</dt>
+  <dd>Язык разметки гипертекста.</dd>
+</dl>
+
+<h2>5. Картинки</h2>
+<p>PNG с прозрачностью в строке: <img src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAYAAADimHc4AAAJNElEQVR4nO1dy3LbRhCchKQku3zIOXd9Tj4mX5KPyefonnMOLtvioyoHceVhs3t2ZwEQoIKuYglYUgS2e6ZnAQILsxUr/s/4Ze4daMXvf/yV/p9//v5zkn0ZE4sUQJD93PFVL9iwNFEWIwCQzsj+reNr/yVt76IsQYxZBQhIZ2R/6djEV9LmRZldjFkEcMQr0hnZnzs29Y20eVGuxLi1EDcVgBCvSGdkf+rY5HfS5kVhYtxUiJsI0Eg8ko6EP3Vs+gesoyBFjNmEmFSAgHgW7TXCHzt24RXWlSAsK24ixGQCAPmtxHvSkfAxBPDrXoyaEJOJMIkAZ/JV1CPxinQk/KFjV/aw/iqWixgoxFU2jC3CqAIIy6kRr0hnhGdEQPKxjYkRCTGJJY0mQMVyPjcS7wmeWoCyXBOCZcNoIowiQGA5tahH4ucQAIWIsmF0SxosACGfWU4v8Uj4LrFrB1hn5FujEKElDRFhkAAV8lnUK+IV6Uj4EAH8eiSAF6JmSYNF6BYgQT6L+kiAnVhm6xEiAZgY/i/LhklE6BKggXxmOYr08ncHf3GZrUdoEaD8VVmwDyxpFBHSApDRTkQ+s5wa8XMIwISoWRITIT062jZ/8hJZ8lnUtxCPhPfur8ehIuSeFP+9688rHDx+czw8sx+BIqQywFkPDjVbyWdRHwmAhGcEOIp1lQksG1RdYJlwcZzQmgXNAgjfZwW3hXwV/Yx4v9xrQUeyrGzokBABC3O6HjQJIHwfx/k18hnZiviI9JYswOhnYjAhmBgtIuDBWnM9yKQ0+r4B+QU18pkQSLwnfYgNtYLVBWzztaGI4PtdREjVg2oGJH0/Qz6LekZ8jwDK/337QWSDygiWCYPrQTaa0PcNyC/IkI9Rj8RPkQFHEvG+7SCWzYng+1tE8LywCwKuEGYARD8bcjLfZwUXyWeWExHvlzcN/Tq5ZVaA/d+DaMNMwMIc1YOr4wOVBdloQuspQOKtkXwW9UwAT/pYNeBIvgvbMPqLCL6f/rwSHh9U8at6Q0S/B/N9c9aD4/qI/K0gf3N+4Wcyr40TEIVGC8T9Y31gVvsIBbngy5m/Z3VpZSaa0HoQ6PtGssAE+bjMCDN4bwz4iPc1oNgRi35WDwqQl2oW0AwgIx+GR2E9FhAfRb4nX0VxazZEn99Utr+DddUfg/5HFw3ILGjJABx2qg09iB1lHWKWw6JeeX+UBSeIav/ZFt8v0Y+1wIgA7Fc3xo8cEfUWNIx+9lMh+r4FYmBUGhFkSCFGIbAtIp21FbB+46UwIa4siBRfHPcr7IJU3RIxlCUYWAezkk3wYp9r3Va0v7U+Mnw68yeLcSaSnoKRD4OPdlYLmBjmCGHLRpZb4a0Jbcpgf1gRNpIBHowPvBLvCr0W5DeqvJ9tC4nH6NuQSDUXyT37fRKfx/Zy8MaEQLB+snpQxYUFCfvJYhdEf8EWotsE+RsgP2NBRtrZdtT++P74vmROiRdIG2qJJDztEBVeBTbc8+9h5z1BzIayFnSqFFwf6WyU1IKID3aZPN1YFmg/bOTDwAqjkehE8mt14ATt6Pv4Hvuek2lE/eqyoKEC1L57F0Q+frZmSeovA5Lt2y2IftwnRGs2NGNKAdT2VPQXoGcbRH/WhhjpGOXsu0Ynm+G9CAfjf/T/sbGFaEebQfJbX+z/DQRWhXco/Am6p+h4oGfjD2L42TL6aUUkBi4jvP0wn++N7Ex/muvB1BaEox+0n5btq6g2IBaJZwU32s8aJrGkW9cABrQfFv3+s0oARIvPq8/eDEsQIILydhMiqaGlzUlyBPmL2IKhsoCJtHjcowAevUfGi8G9C3CCv3eHpdcABk/2BkQ43ZsYSxeAkYljfPbZE3ktEksQICInc6IMM4G9fzqP53F5NkwtQMvBS20flOVsRBb0WNLRCYLLxynPC/UIkDnt2ns6wneYnVZQpKos8BHfi4MT40BeeLliE95HQedrF1/O1zJ+PV9U9P38u2a59rHrnHcFR2INBRjFzNvVi/2/gRhDRVHYi+tFr64VvXUNYJ2NfH5L2iLgsBQv0o3qA9rPTTClAKwTanvsJ0E1AmopxAZkY7FtIfoIlrPIk3GRJUXfrU6UqYK7Dd5T383IZyMfjP4Ikf93oUUA+YNy4gcajJ7aD+KlrRbxDJ54I+T77bIs6B397MmdMz8q/F2eihCFOIsDGTEgWOcxOr1n+zZsx9cRyMcREMuCyJLY6CcLWoBtIgtSQ8+az6PN1NoV0F5MCGsgqEFbFP1s+NmFjADsMrvIgjBS8Np7I5bjyc4SX4BkWoV8g3V2I5/KZA9mP1VcnQ0NjgdqwMLkwUYSGH1oHWg3R9IWWRD739q2ov2t9ZFBjv8Lei2IXYKN2eB3cBu0+YKLHWZtNbAMMPB4JN9/HqM98n68YS91abo1CsBuLmA3IaAP+ts8cXtoQ2yUhKcjmE0pIPEG5LM2ZUk4t0Rt6MmOfiXoDzJgQwqvwfkPlqbYIRzuMUtglsP+L/N5tCHc/gHWVX8sEf3yVtWMBeGQFLPAi8Cin90A56M6azURMJJNRL0J8s2tI/HRyIfdKxxC/iRJijHb2CvZmb3YaZwaQGWCAWmtUV/LBiOkK/KZ7zPrYVMWeIx+o7ZX1d+U7HeqFGOMfqwFNd8fAlWIWfRn75S3wHpT0W8dk3VEcwThJB1zzhWBQjLijWShCfINrAfnlIvmDhp1sg5vRUUEn3o4nYtB9OMyEsXaelATwAbOlmLCeppGPh6ZCZtqk3ZYx5Q1Bjd0YDbYyBlggeVYI/k46umapCPTmYIXN2VZEcEfIRcR/HQuKhOitjHAjmDxPbSh7IxZJs54XsyYVcM6Z1wc/cuYM65gnTXRbLZZEwsa6oEtZN5QZUNKAHOWY0nyLeP7Hr0n47Ae4PFB2clHMlbG2oAYqy7gd9SIt7Fmzs1gnTv6Dfczd3TBOnu62Wyzpxeszw+Y8fkBBesTNGZ8gkbB+gyZfqxPUfoIT1EqWJ8jlsf6JL03fIwn6Xmsz5Jsw/o01Td8vKepeqzPE9ZYn6j9Ex/3idqI9ZnyPzGLAAUwiakSo4CJUgP7bfaKdJuB+IJZBfAIxCiIJhJXYFf2zU66x2IE8BBz7TNRarg6P78E0j0WKQCDegBChKWRvWKB+A9CpG3TEFNt8wAAAABJRU5ErkJggg==" width="24">
+рядом с текстом, и ещё одна, крупнее: <img src="data:image/png;base64,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" width="40">.</p>
+<figure>
+  <img src="data:image/jpeg;base64,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" style="display: block; width: 50%; margin: 0 auto">
+  <figcaption style="text-align: center" class="muted">figure и figcaption: JPEG, display: block, width: 50%, margin: auto</figcaption>
+</figure>
+<p>Картинка, которую не удалось загрузить, пропускается: <img src="missing.png">(здесь ничего нет).</p>
+
+<h2>6. Таблицы</h2>
+<table class="data">
+  <caption>caption — заголовок таблицы; thead повторяется на каждой странице</caption>
+  <thead><tr><th>№</th><th>Наименование</th><th>Кол-во</th><th>Цена</th><th>Сумма</th></tr></thead>
+  <tbody>
+    <tr class="odd"><td class="num">1</td><td>Картридж</td><td class="num">8</td><td class="num">87&nbsp;₽</td><td class="num">696&nbsp;₽</td></tr>
+    <tr><td class="num">2</td><td>Степлер</td><td class="num">2</td><td class="num">124&nbsp;₽</td><td class="num">248&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">3</td><td>Скрепки</td><td class="num">9</td><td class="num">161&nbsp;₽</td><td class="num">1&nbsp;449&nbsp;₽</td></tr>
+    <tr><td class="num">4</td><td>Маркер</td><td class="num">3</td><td class="num">198&nbsp;₽</td><td class="num">594&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">5</td><td>Папка-регистратор</td><td class="num">10</td><td class="num">235&nbsp;₽</td><td class="num">2&nbsp;350&nbsp;₽</td></tr>
+    <tr><td class="num">6</td><td>Калькулятор</td><td class="num">4</td><td class="num">272&nbsp;₽</td><td class="num">1&nbsp;088&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">7</td><td>Ножницы</td><td class="num">11</td><td class="num">309&nbsp;₽</td><td class="num">3&nbsp;399&nbsp;₽</td></tr>
+    <tr><td class="num">8</td><td>Бумага А4</td><td class="num">5</td><td class="num">346&nbsp;₽</td><td class="num">1&nbsp;730&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">9</td><td>Картридж, с очень длинным описанием, которое переносится внутри ячейки</td><td class="num">12</td><td class="num">383&nbsp;₽</td><td class="num">4&nbsp;596&nbsp;₽</td></tr>
+    <tr><td class="num">10</td><td>Степлер</td><td class="num">6</td><td class="num">420&nbsp;₽</td><td class="num">2&nbsp;520&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">11</td><td>Скрепки</td><td class="num">13</td><td class="num">57&nbsp;₽</td><td class="num">741&nbsp;₽</td></tr>
+    <tr><td class="num">12</td><td>Маркер</td><td class="num">7</td><td class="num">94&nbsp;₽</td><td class="num">658&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">13</td><td>Папка-регистратор</td><td class="num">1</td><td class="num">131&nbsp;₽</td><td class="num">131&nbsp;₽</td></tr>
+    <tr><td class="num">14</td><td>Калькулятор</td><td class="num">8</td><td class="num">168&nbsp;₽</td><td class="num">1&nbsp;344&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">15</td><td>Ножницы</td><td class="num">2</td><td class="num">205&nbsp;₽</td><td class="num">410&nbsp;₽</td></tr>
+    <tr><td class="num">16</td><td>Бумага А4</td><td class="num">9</td><td class="num">242&nbsp;₽</td><td class="num">2&nbsp;178&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">17</td><td>Картридж</td><td class="num">3</td><td class="num">279&nbsp;₽</td><td class="num">837&nbsp;₽</td></tr>
+    <tr><td class="num">18</td><td>Степлер, с очень длинным описанием, которое переносится внутри ячейки</td><td class="num">10</td><td class="num">316&nbsp;₽</td><td class="num">3&nbsp;160&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">19</td><td>Скрепки</td><td class="num">4</td><td class="num">353&nbsp;₽</td><td class="num">1&nbsp;412&nbsp;₽</td></tr>
+    <tr><td class="num">20</td><td>Маркер</td><td class="num">11</td><td class="num">390&nbsp;₽</td><td class="num">4&nbsp;290&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">21</td><td>Папка-регистратор</td><td class="num">5</td><td class="num">427&nbsp;₽</td><td class="num">2&nbsp;135&nbsp;₽</td></tr>
+    <tr><td class="num">22</td><td>Калькулятор</td><td class="num">12</td><td class="num">64&nbsp;₽</td><td class="num">768&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">23</td><td>Ножницы</td><td class="num">6</td><td class="num">101&nbsp;₽</td><td class="num">606&nbsp;₽</td></tr>
+    <tr><td class="num">24</td><td>Бумага А4</td><td class="num">13</td><td class="num">138&nbsp;₽</td><td class="num">1&nbsp;794&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">25</td><td>Картридж</td><td class="num">7</td><td class="num">175&nbsp;₽</td><td class="num">1&nbsp;225&nbsp;₽</td></tr>
+    <tr><td class="num">26</td><td>Степлер</td><td class="num">1</td><td class="num">212&nbsp;₽</td><td class="num">212&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">27</td><td>Скрепки, с очень длинным описанием, которое переносится внутри ячейки</td><td class="num">8</td><td class="num">249&nbsp;₽</td><td class="num">1&nbsp;992&nbsp;₽</td></tr>
+    <tr><td class="num">28</td><td>Маркер</td><td class="num">2</td><td class="num">286&nbsp;₽</td><td class="num">572&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">29</td><td>Папка-регистратор</td><td class="num">9</td><td class="num">323&nbsp;₽</td><td class="num">2&nbsp;907&nbsp;₽</td></tr>
+    <tr><td class="num">30</td><td>Калькулятор</td><td class="num">3</td><td class="num">360&nbsp;₽</td><td class="num">1&nbsp;080&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">31</td><td>Ножницы</td><td class="num">10</td><td class="num">397&nbsp;₽</td><td class="num">3&nbsp;970&nbsp;₽</td></tr>
+    <tr><td class="num">32</td><td>Бумага А4</td><td class="num">4</td><td class="num">434&nbsp;₽</td><td class="num">1&nbsp;736&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">33</td><td>Картридж</td><td class="num">11</td><td class="num">71&nbsp;₽</td><td class="num">781&nbsp;₽</td></tr>
+    <tr><td class="num">34</td><td>Степлер</td><td class="num">5</td><td class="num">108&nbsp;₽</td><td class="num">540&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">35</td><td>Скрепки</td><td class="num">12</td><td class="num">145&nbsp;₽</td><td class="num">1&nbsp;740&nbsp;₽</td></tr>
+    <tr><td class="num">36</td><td>Маркер, с очень длинным описанием, которое переносится внутри ячейки</td><td class="num">6</td><td class="num">182&nbsp;₽</td><td class="num">1&nbsp;092&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">37</td><td>Папка-регистратор</td><td class="num">13</td><td class="num">219&nbsp;₽</td><td class="num">2&nbsp;847&nbsp;₽</td></tr>
+    <tr><td class="num">38</td><td>Калькулятор</td><td class="num">7</td><td class="num">256&nbsp;₽</td><td class="num">1&nbsp;792&nbsp;₽</td></tr>
+    <tr class="odd"><td class="num">39</td><td>Ножницы</td><td class="num">1</td><td class="num">293&nbsp;₽</td><td class="num">293&nbsp;₽</td></tr>
+    <tr><td class="num">40</td><td>Бумага А4</td><td class="num">8</td><td class="num">330&nbsp;₽</td><td class="num">2&nbsp;640&nbsp;₽</td></tr>
+  </tbody>
+  <tfoot><tr><td colspan="4">tfoot — итого</td><td class="num">64&nbsp;553&nbsp;₽</td></tr></tfoot>
+</table>
+
+<h3>colspan, rowspan, border-spacing</h3>
+<table class="separate">
+  <tr><td rowspan="2">rowspan=2</td><td>b</td><td>c</td></tr>
+  <tr><td colspan="2" style="background: #fff6dc">colspan=2</td></tr>
+  <tr><td>d</td><td>e</td><td>f</td></tr>
+</table>
+
+<h3>vertical-align в ячейках</h3>
+<table class="valign" style="border-collapse: collapse">
+  <tr>
+    <td style="vertical-align: top">top</td>
+    <td style="vertical-align: middle">middle</td>
+    <td style="vertical-align: bottom">bottom</td>
+    <td>несколько<br>строк<br>текста</td>
+  </tr>
+</table>
+
+<h2>7. Разбиение на страницы</h2>
+<div class="warn"><b>break-inside: avoid.</b> Этот блок не разрывается между страницами:
+если он не помещается в остаток страницы, он целиком переносится на следующую.</div>
+<p>Заголовки h1–h6 не остаются в самом низу страницы: у них break-after: avoid, и заголовок
+переезжает на следующую страницу вместе с текстом. В абзацах действуют orphans и widows: не меньше
+двух строк абзаца остаётся внизу страницы и переходит на следующую.</p>
+<p style="page-break-after: always">page-break-after: always — после этого абзаца начинается новая страница.</p>
+<h3>Новая страница</h3>
+<p>Этот раздел начался с новой страницы благодаря page-break-after у предыдущего абзаца.
+Раздел «4. Списки» начался с новой страницы через break-before: page.</p>
+
+</article>
+</main>
+
+<footer><hr><p class="muted" style="font-size: 8pt; text-align: center">footer — конец документа. Сгенерировано html_pdf.</p></footer>
+</body>
+</html>
