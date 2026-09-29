@@ -10,7 +10,12 @@ pub struct Font<'a> {
     pub(crate) family: String,
     pub(crate) weight: u16,
     pub(crate) italic: bool,
+    /// Glyphs for U+0000..U+07FF (Latin, Greek, Cyrillic): a cmap lookup
+    /// scans subtables and dominated layout time.
+    low: Vec<u16>,
 }
+
+const LOW: u32 = 0x800;
 
 impl<'a> Font<'a> {
     /// Parses the first face in `data`. Only TrueType (`glyf`) outlines are accepted.
@@ -35,12 +40,20 @@ impl<'a> Font<'a> {
             .to_lowercase();
         let weight = face.weight().to_number();
         let italic = face.is_italic() || face.is_oblique();
+        let low = (0..LOW)
+            .map(|c| {
+                char::from_u32(c)
+                    .and_then(|c| face.glyph_index(c))
+                    .map_or(0, |g| g.0)
+            })
+            .collect();
         Ok(Font {
             data,
             face,
             family,
             weight,
             italic,
+            low,
         })
     }
 
@@ -85,7 +98,10 @@ impl<'a> Font<'a> {
 
     /// Glyph for `c`, or `.notdef` (0) when the font has none.
     pub(crate) fn glyph(&self, c: char) -> u16 {
-        self.face.glyph_index(c).map_or(0, |g| g.0)
+        match self.low.get(c as usize) {
+            Some(&g) => g,
+            None => self.face.glyph_index(c).map_or(0, |g| g.0),
+        }
     }
 
     /// Advance width in 1/1000 em, the unit PDF font metrics use.

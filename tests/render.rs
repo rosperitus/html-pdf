@@ -16,8 +16,10 @@ fn renders_document() {
     .unwrap();
     assert!(pdf.starts_with(b"%PDF-1.7"));
     assert!(pdf.ends_with(b"%%EOF\n"));
-    assert!(find(&pdf, b"/BaseFont /NotoSans-Regular"));
+    assert!(find(&pdf, b"+NotoSans-Regular /Encoding /Identity-H"));
     assert!(find(&pdf, b"/MediaBox [0 0 595.28 841.89]"));
+    // The embedded font is a subset, far below the 600 KB original.
+    assert!(pdf.len() < 30_000, "{} bytes", pdf.len());
 }
 
 #[test]

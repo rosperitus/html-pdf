@@ -12,6 +12,7 @@ use miniz_oxide::deflate::compress_to_vec_zlib;
 use crate::css::Color;
 use crate::font::Font;
 use crate::image::Image;
+use crate::subset;
 
 pub struct Document<'f> {
     fonts: Vec<FontUse<'f>>,
@@ -228,9 +229,19 @@ impl<'f> Document<'f> {
 fn write_font(w: &mut Writer, id: usize, index: usize, f: &FontUse) {
     let font = f.font;
     let face = &font.face;
-    let name = font
+    let base = font
         .postscript_name()
         .unwrap_or_else(|| format!("Font{index}"));
+    // A subset's name carries a six-letter tag unique to its glyph set (§9.6.4).
+    let subset = face
+        .is_subsetting_allowed()
+        .then(|| subset::subset(font.data, f.used.keys().copied()))
+        .flatten();
+    let name = match subset {
+        Some(_) => format!("{}+{base}", subset_tag(index, f.used.keys().copied())),
+        None => base,
+    };
+    let data = subset.as_deref().unwrap_or(font.data);
     let [cid, descriptor, file, cmap] = [id + 1, id + 2, id + 3, id + 4];
 
     w.obj(
@@ -268,9 +279,19 @@ fn write_font(w: &mut Writer, id: usize, index: usize, f: &FontUse) {
             s(face.capital_height().unwrap_or(ascent)),
         ),
     );
-    // ponytail: embeds the whole font file, subsetting is phase 6
-    w.stream(file, &format!("/Length1 {}", font.data.len()), font.data);
+    w.stream(file, &format!("/Length1 {}", data.len()), data);
     w.stream(cmap, "", to_unicode(&f.used).as_bytes());
+}
+
+/// Six uppercase letters from an FNV-1a hash of the font index and glyphs.
+fn subset_tag(index: usize, glyphs: impl Iterator<Item = u16>) -> String {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for v in std::iter::once(index as u64).chain(glyphs.map(u64::from)) {
+        h = (h ^ v).wrapping_mul(0x0100_0000_01b3);
+    }
+    (0..6)
+        .map(|i| char::from(b'A' + ((h >> (i * 8)) % 26) as u8))
+        .collect()
 }
 
 /// `/W` array for the used glyphs, consecutive ids grouped: `[3 [500 600] 10 [250]]`.

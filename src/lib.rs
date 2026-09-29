@@ -16,6 +16,7 @@ mod image;
 mod layout;
 mod pdf;
 mod style;
+mod subset;
 
 pub use error::{Error, Result};
 pub use font::Font;
