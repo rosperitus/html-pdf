@@ -6,6 +6,10 @@ use crate::error::{Error, Result};
 pub struct Font<'a> {
     pub(crate) data: &'a [u8],
     pub(crate) face: Face<'a>,
+    /// Lowercase family name, matched against CSS `font-family`.
+    pub(crate) family: String,
+    pub(crate) weight: u16,
+    pub(crate) italic: bool,
 }
 
 impl<'a> Font<'a> {
@@ -19,7 +23,64 @@ impl<'a> Font<'a> {
         if face.permissions() == Some(Permissions::Restricted) {
             return Err(Error::Font("font license forbids embedding".into()));
         }
-        Ok(Font { data, face })
+        let family = [name_id::TYPOGRAPHIC_FAMILY, name_id::FAMILY]
+            .iter()
+            .find_map(|&id| {
+                face.names()
+                    .into_iter()
+                    .filter(|n| n.name_id == id)
+                    .find_map(|n| n.to_string())
+            })
+            .unwrap_or_default()
+            .to_lowercase();
+        let weight = face.weight().to_number();
+        let italic = face.is_italic() || face.is_oblique();
+        Ok(Font {
+            data,
+            face,
+            family,
+            weight,
+            italic,
+        })
+    }
+
+    /// Width of `text` in points at `size`.
+    pub(crate) fn measure(&self, text: &str, size: f32) -> f32 {
+        text.chars()
+            .map(|c| self.advance(self.glyph(c)))
+            .sum::<f32>()
+            * size
+            / 1000.0
+    }
+
+    /// Ascent, descent (positive, below the baseline) and line gap in 1/1000 em.
+    pub(crate) fn vmetrics(&self) -> (f32, f32, f32) {
+        let f = &self.face;
+        (
+            self.scale(f.ascender().into()),
+            -self.scale(f.descender().into()),
+            self.scale(f.line_gap().into()),
+        )
+    }
+
+    /// Underline offset below the baseline and thickness, in 1/1000 em.
+    pub(crate) fn underline(&self) -> (f32, f32) {
+        self.face.underline_metrics().map_or((100.0, 50.0), |m| {
+            (
+                -self.scale(m.position.into()),
+                self.scale(m.thickness.into()),
+            )
+        })
+    }
+
+    /// Strikeout offset above the baseline and thickness, in 1/1000 em.
+    pub(crate) fn strikeout(&self) -> (f32, f32) {
+        self.face.strikeout_metrics().map_or((300.0, 50.0), |m| {
+            (
+                self.scale(m.position.into()),
+                self.scale(m.thickness.into()),
+            )
+        })
     }
 
     /// Glyph for `c`, or `.notdef` (0) when the font has none.
@@ -73,5 +134,15 @@ mod tests {
         assert_eq!(font.glyph('\u{E000}'), 0);
         assert!(font.advance(font.glyph('M')) > font.advance(font.glyph('i')));
         assert_eq!(font.postscript_name().as_deref(), Some("NotoSans-Regular"));
+        assert_eq!(
+            (font.family.as_str(), font.weight, font.italic),
+            ("noto sans", 400, false)
+        );
+        let (asc, desc, _) = font.vmetrics();
+        assert!(asc > 0.0 && desc > 0.0);
+        assert_eq!(
+            font.measure("ab", 10.0),
+            font.measure("a", 10.0) + font.measure("b", 10.0)
+        );
     }
 }

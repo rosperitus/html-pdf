@@ -6,7 +6,7 @@ use crate::css::{
     self, Break, Color, Combinator, Compound, Decl, Decoration, Display, FontWeight, Length,
     LineHeight, ListStyle, PageRule, Selector, Sheet, TextAlign, WhiteSpace,
 };
-use crate::html::{Dom, Element, NodeData};
+use crate::html::{self, Dom, Element, NodeData};
 
 /// A computed length: absolute, or a percentage the layout resolves.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -27,6 +27,8 @@ pub struct Style {
     pub border_color: [Option<Color>; 4],
     pub width: Size,
     pub height: Size,
+    /// `box-sizing: border-box`: width and height include padding and border.
+    pub border_box: bool,
     pub color: Color,
     pub background: Option<Color>,
     pub font_family: Rc<[String]>,
@@ -61,6 +63,7 @@ impl Style {
             border_color: [None; 4],
             width: Size::Auto,
             height: Size::Auto,
+            border_box: false,
             color: Color::BLACK,
             background: None,
             font_family: Rc::from(["serif".to_string()]),
@@ -91,6 +94,7 @@ impl Style {
             border_color: [None; 4],
             width: Size::Auto,
             height: Size::Auto,
+            border_box: false,
             background: None,
             break_before: Break::Auto,
             break_after: Break::Auto,
@@ -175,7 +179,7 @@ pub fn cascade(dom: &Dom) -> Styled {
         let style = match &node.data {
             NodeData::Element(el) => {
                 let s = compute(dom, id, el, parent, &sheet, ua_rules, root_font_size);
-                if node.parent == Some(0) && el.tag == "html" {
+                if id == html::HTML {
                     root_font_size = s.font_size;
                 }
                 s
@@ -321,6 +325,7 @@ fn apply(s: &mut Style, parent: &Style, decl: &Decl, rem: f32) {
         Decl::Orphans(n) => s.orphans = *n,
         Decl::Widows(n) => s.widows = *n,
         Decl::ListStyle(l) => s.list_style = *l,
+        Decl::BorderBox(b) => s.border_box = *b,
         Decl::Inherit(name) => inherit_one(s, parent, name),
     }
 }
@@ -372,6 +377,7 @@ fn inherit_one(s: &mut Style, p: &Style, name: &str) {
         "orphans" => s.orphans = p.orphans,
         "widows" => s.widows = p.widows,
         "list-style-type" => s.list_style = p.list_style,
+        "box-sizing" => s.border_box = p.border_box,
         _ => {}
     }
 }
@@ -439,7 +445,6 @@ fn compound_matches(el: &Element, k: &Compound) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::html;
 
     /// Style of the first element with `id` attribute `target`.
     fn style_of(src: &str, target: &str) -> Style {

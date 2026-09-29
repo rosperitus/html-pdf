@@ -177,6 +177,8 @@ pub enum Decl {
     Orphans(u32),
     Widows(u32),
     ListStyle(ListStyle),
+    /// `true` for `border-box`.
+    BorderBox(bool),
     /// `inherit` for the named longhand.
     Inherit(&'static str),
 }
@@ -223,6 +225,7 @@ pub const LONGHANDS: &[&str] = &[
     "orphans",
     "widows",
     "list-style-type",
+    "box-sizing",
 ];
 
 const SIDES: [&str; 4] = ["top", "right", "bottom", "left"];
@@ -586,6 +589,11 @@ fn expand(name: &str, value: &str) -> Option<Vec<Decl>> {
         "orphans" => one(Decl::Orphans(value.parse().ok().filter(|n| *n > 0)?)),
         "widows" => one(Decl::Widows(value.parse().ok().filter(|n| *n > 0)?)),
         "list-style-type" => one(Decl::ListStyle(list_style(value)?)),
+        "box-sizing" => match value {
+            "content-box" => one(Decl::BorderBox(false)),
+            "border-box" => one(Decl::BorderBox(true)),
+            _ => None,
+        },
         "list-style" => {
             let t = tokens
                 .iter()

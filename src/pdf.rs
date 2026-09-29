@@ -9,11 +9,8 @@ use std::fmt::Write as _;
 
 use miniz_oxide::deflate::compress_to_vec_zlib;
 
+use crate::css::Color;
 use crate::font::Font;
-
-/// Handle returned by [`Document::add_font`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct FontId(usize);
 
 pub struct Document<'f> {
     fonts: Vec<FontUse<'f>>,
@@ -30,28 +27,42 @@ struct Page {
     width: f32,
     height: f32,
     content: String,
+    fill: Option<Color>,
 }
 
-impl Default for Document<'_> {
-    fn default() -> Self {
-        Self::new()
+impl Page {
+    fn set_fill(&mut self, c: Color) {
+        if self.fill != Some(c) {
+            let ch = |v: u8| num(f32::from(v) / 255.0);
+            let _ = writeln!(self.content, "{} {} {} rg", ch(c.r), ch(c.g), ch(c.b));
+            self.fill = Some(c);
+        }
     }
+}
+
+/// A run of text in one font, size and color.
+pub struct Text<'a> {
+    /// Index into the fonts in the order they were added.
+    pub font: usize,
+    pub size: f32,
+    pub color: Color,
+    /// Extra advance after each U+0020, in points.
+    pub word_spacing: f32,
+    pub text: &'a str,
 }
 
 impl<'f> Document<'f> {
-    pub fn new() -> Self {
+    pub fn new(fonts: &'f [Font<'f>]) -> Self {
         Document {
-            fonts: Vec::new(),
+            fonts: fonts
+                .iter()
+                .map(|font| FontUse {
+                    font,
+                    used: BTreeMap::new(),
+                })
+                .collect(),
             pages: Vec::new(),
         }
-    }
-
-    pub fn add_font(&mut self, font: &'f Font<'f>) -> FontId {
-        self.fonts.push(FontUse {
-            font,
-            used: BTreeMap::new(),
-        });
-        FontId(self.fonts.len() - 1)
     }
 
     /// Starts a new page; size in points.
@@ -60,32 +71,54 @@ impl<'f> Document<'f> {
             width,
             height,
             content: String::new(),
+            fill: None,
         });
     }
 
-    /// Draws `text` on the last page with its baseline starting at (`x`, `y`),
-    /// measured in points from the top-left corner. Does nothing before the
-    /// first [`add_page`](Self::add_page).
-    pub fn text(&mut self, font: FontId, size: f32, x: f32, y: f32, text: &str) {
-        let (Some(page), Some(f)) = (self.pages.last_mut(), self.fonts.get_mut(font.0)) else {
+    /// Draws a run on the last page with its baseline starting at (`x`, `y`),
+    /// measured in points from the top-left corner.
+    pub fn text(&mut self, x: f32, y: f32, run: &Text) {
+        let (Some(page), Some(f)) = (self.pages.last_mut(), self.fonts.get_mut(run.font)) else {
             return;
         };
+        page.set_fill(run.color);
         let _ = write!(
             page.content,
-            "BT /F{} {} Tf {} {} Td <",
-            font.0,
-            num(size),
+            "BT /F{} {} Tf {} {} Td [<",
+            run.font,
+            num(run.size),
             num(x),
             num(page.height - y)
         );
-        for c in text.chars() {
+        // TJ adjustments are in thousandths of text space, positive moves left.
+        let adjust = num(-run.word_spacing * 1000.0 / run.size);
+        for c in run.text.chars() {
             let gid = f.font.glyph(c);
             if gid != 0 {
                 f.used.entry(gid).or_insert(c);
             }
             let _ = write!(page.content, "{gid:04X}");
+            if c == ' ' && adjust != "0" {
+                let _ = write!(page.content, "> {adjust} <");
+            }
         }
-        page.content.push_str("> Tj ET\n");
+        page.content.push_str(">] TJ ET\n");
+    }
+
+    /// Fills a rectangle given by its top-left corner.
+    pub fn rect(&mut self, x: f32, y: f32, w: f32, h: f32, color: Color) {
+        let Some(page) = self.pages.last_mut() else {
+            return;
+        };
+        page.set_fill(color);
+        let _ = writeln!(
+            page.content,
+            "{} {} {} {} re f",
+            num(x),
+            num(page.height - y - h),
+            num(w),
+            num(h)
+        );
     }
 
     pub fn finish(self) -> Vec<u8> {
@@ -310,13 +343,20 @@ mod tests {
 
     #[test]
     fn xref_points_at_objects() {
-        let font = Font::new(NOTO).unwrap();
-        let mut doc = Document::new();
-        let f = doc.add_font(&font);
+        let fonts = [Font::new(NOTO).unwrap()];
+        let mut doc = Document::new(&fonts);
+        let run = |text| Text {
+            font: 0,
+            size: 12.0,
+            color: Color::BLACK,
+            word_spacing: 0.0,
+            text,
+        };
         doc.add_page(595.0, 842.0);
-        doc.text(f, 12.0, 72.0, 72.0, "Привет, world");
+        doc.text(72.0, 72.0, &run("Привет, world"));
+        doc.rect(72.0, 80.0, 100.0, 1.0, Color::BLACK);
         doc.add_page(595.0, 842.0);
-        doc.text(f, 12.0, 72.0, 72.0, "second");
+        doc.text(72.0, 72.0, &run("second"));
         let pdf = doc.finish();
 
         let tail = &pdf[find(&pdf, b"startxref\n").unwrap() + 10..];

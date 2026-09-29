@@ -93,16 +93,35 @@ const CLOSES_P: &[&str] = &[
 /// Elements an implied end tag never looks past.
 const SCOPE: &[&str] = &["table", "td", "th", "caption", "html", "button"];
 
+/// `html` and `body` always exist at these ids, as a browser would imply them.
+pub const HTML: usize = 1;
+pub const BODY: usize = 2;
+/// Stack depth of document, html and body; never popped.
+const FIXED: usize = 3;
+const MAX_DEPTH: usize = 256;
+
 pub fn parse(src: &str) -> Dom {
+    let element = |parent, tag: &str, child| Node {
+        parent: Some(parent),
+        children: child,
+        data: NodeData::Element(Element {
+            tag: tag.into(),
+            attrs: Vec::new(),
+        }),
+    };
     let mut b = Builder {
         dom: Dom {
-            nodes: vec![Node {
-                parent: None,
-                children: Vec::new(),
-                data: NodeData::Document,
-            }],
+            nodes: vec![
+                Node {
+                    parent: None,
+                    children: vec![HTML],
+                    data: NodeData::Document,
+                },
+                element(0, "html", vec![BODY]),
+                element(HTML, "body", Vec::new()),
+            ],
         },
-        stack: vec![0],
+        stack: vec![0, HTML, BODY],
     };
     let bytes = src.as_bytes();
     let mut i = 0;
@@ -199,6 +218,14 @@ fn start_tag(src: &str, i: usize, b: &mut Builder) -> usize {
 
     let raw_text = RAW_TEXT.contains(&tag.as_str());
     let close = format!("</{tag}");
+    // A newline right after <pre> is not content.
+    if tag == "pre" {
+        if bytes.get(i..i + 2) == Some(b"\r\n") {
+            i += 2;
+        } else if bytes.get(i) == Some(&b'\n') {
+            i += 1;
+        }
+    }
     b.start(tag, attrs);
     if raw_text {
         let end = find_ci(bytes, i, close.as_bytes()).unwrap_or(src.len());
@@ -266,15 +293,26 @@ impl Builder {
     }
 
     fn pop(&mut self) {
-        if self.stack.len() > 1 {
+        if self.stack.len() > FIXED {
             self.stack.pop();
+        }
+    }
+
+    /// Adds attributes from a repeated `<html>` or `<body>` tag to the implied element.
+    fn merge(&mut self, id: usize, attrs: Vec<(String, String)>) {
+        if let Some(NodeData::Element(el)) = self.dom.nodes.get_mut(id).map(|n| &mut n.data) {
+            for (n, v) in attrs {
+                if !el.attrs.iter().any(|(have, _)| *have == n) {
+                    el.attrs.push((n, v));
+                }
+            }
         }
     }
 
     /// Pops up to and including the nearest open element in `targets`, unless
     /// an element in `stop` comes first.
     fn close_nearest(&mut self, targets: &[&str], stop: &[&str]) {
-        for pos in (1..self.stack.len()).rev() {
+        for pos in (FIXED..self.stack.len()).rev() {
             let tag = self.tag(self.stack[pos]);
             if targets.contains(&tag) {
                 self.stack.truncate(pos);
@@ -288,6 +326,27 @@ impl Builder {
 
     fn start(&mut self, tag: String, attrs: Vec<(String, String)>) {
         match tag.as_str() {
+            "html" => return self.merge(HTML, attrs),
+            "body" => {
+                self.stack.truncate(FIXED);
+                return self.merge(BODY, attrs);
+            }
+            // Head goes first in <html>, before the implied body.
+            "head" => {
+                let id = self.dom.nodes.len();
+                let data = NodeData::Element(Element { tag, attrs });
+                self.dom.nodes.push(Node {
+                    parent: Some(HTML),
+                    children: Vec::new(),
+                    data,
+                });
+                if let Some(html) = self.dom.nodes.get_mut(HTML) {
+                    html.children.insert(0, id);
+                }
+                self.stack.truncate(FIXED);
+                self.stack.push(id);
+                return;
+            }
             "li" => self.close_nearest(&["li"], &["ul", "ol", "table", "td", "th"]),
             "dt" | "dd" => self.close_nearest(&["dt", "dd"], &["dl", "table", "td", "th"]),
             "td" | "th" => self.close_nearest(&["td", "th"], &["tr", "table"]),
@@ -302,7 +361,8 @@ impl Builder {
         }
         let void = VOID.contains(&tag.as_str());
         let id = self.push_node(NodeData::Element(Element { tag, attrs }));
-        if !void {
+        // Past the depth limit elements become siblings, which bounds recursion downstream.
+        if !void && self.stack.len() < MAX_DEPTH {
             self.stack.push(id);
         }
     }
@@ -468,8 +528,29 @@ mod tests {
         }
     }
 
+    /// Children of body.
     fn tree(src: &str) -> String {
-        dump(&parse(src), 0)
+        let dom = parse(src);
+        dom.nodes[BODY]
+            .children
+            .iter()
+            .map(|&c| dump(&dom, c))
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn implied_html_and_body() {
+        assert_eq!(dump(&parse("x"), 0), r#"html(body("x"))"#);
+        assert_eq!(
+            dump(
+                &parse("<html lang=ru><head><title>t</title></head><body class=a>x</body></html>y"),
+                0
+            ),
+            r#"html(head(title("t")) body("xy"))"#
+        );
+        let dom = parse("<body class=a><p><body id=b></body>");
+        assert_eq!(dom.element(BODY).unwrap().attrs.len(), 2);
     }
 
     #[test]
@@ -478,6 +559,7 @@ mod tests {
         assert_eq!(tree("x<br>y<hr/>z"), r#""x" br "y" hr "z""#);
         assert_eq!(tree("<div>a</span>b</div>"), r#"div("ab")"#);
         assert_eq!(tree("<!DOCTYPE html><!-- c --><p>a</p>"), r#"p("a")"#);
+        assert_eq!(tree("<pre>\na\n</pre>"), r#"pre("a\n")"#);
     }
 
     #[test]
@@ -499,7 +581,7 @@ mod tests {
     #[test]
     fn attributes() {
         let dom = parse(r#"<A HREF="x&amp;y" class='a b' checked id=main data-x = 1 href=dup>"#);
-        let el = dom.element(1).unwrap();
+        let el = dom.element(3).unwrap();
         assert_eq!(el.tag, "a");
         assert_eq!(
             el.attrs,
@@ -543,6 +625,12 @@ mod tests {
         for end in (0..=src.len()).filter(|&e| src.is_char_boundary(e)) {
             parse(&src[..end]);
         }
+        let deep = parse(&"<div>".repeat(1000));
+        assert!(
+            deep.nodes
+                .iter()
+                .all(|n| n.children.len() <= 1 || n.children.len() > 700)
+        );
         for junk in [
             "<", "</", "<a", "<a b", "<a b=", "<a b='", "&", "&#", "&#x;", "<!--", "<a =>", "</ >",
         ] {
