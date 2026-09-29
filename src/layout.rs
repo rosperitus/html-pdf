@@ -2,12 +2,20 @@
 //!
 //! Coordinates are points from the top-left of the content area, y downward.
 
-use crate::css::{Break, Color, Display, Length, LineHeight, TextAlign, WhiteSpace};
+mod table;
+
+use std::collections::HashMap;
+
+use crate::css::{Break, Color, Display, Length, LineHeight, ListStyle, TextAlign, WhiteSpace};
 use crate::font::Font;
 use crate::html::{Dom, NodeData};
+use crate::image::{self, Image};
 use crate::style::{Size, Style};
 
-#[derive(Debug, PartialEq)]
+/// Loads the bytes behind an `<img src>` that is not a `data:` URI.
+pub type Resolve<'a> = &'a dyn Fn(&str) -> Option<Vec<u8>>;
+
+#[derive(Clone, Debug, PartialEq)]
 pub enum Item {
     Rect {
         x: f32,
@@ -26,16 +34,45 @@ pub enum Item {
         word_spacing: f32,
         text: String,
     },
+    /// Index into [`Layout::images`]; `y` is the top edge.
+    Image {
+        x: f32,
+        y: f32,
+        w: f32,
+        h: f32,
+        image: usize,
+    },
+}
+
+impl Item {
+    pub fn shifted(&self, dx: f32, dy: f32) -> Item {
+        let mut item = self.clone();
+        match &mut item {
+            Item::Rect { x, y, .. } | Item::Text { x, y, .. } | Item::Image { x, y, .. } => {
+                *x += dx;
+                *y += dy;
+            }
+        }
+        item
+    }
 }
 
 pub struct Layout {
     pub items: Vec<Item>,
+    pub images: Vec<Image>,
 }
 
 /// Lays out the document `width` wide on pages `page_height` tall; pages
 /// follow each other at multiples of `page_height`. Pass `f32::INFINITY` for
 /// one endless page.
-pub fn layout(dom: &Dom, styles: &[Style], fonts: &[Font], width: f32, page_height: f32) -> Layout {
+pub fn layout(
+    dom: &Dom,
+    styles: &[Style],
+    fonts: &[Font],
+    width: f32,
+    page_height: f32,
+    resolve: Resolve,
+) -> Layout {
     let faces: Vec<_> = fonts
         .iter()
         .map(|f| (f.family.as_str(), f.weight, f.italic))
@@ -47,13 +84,21 @@ pub fn layout(dom: &Dom, styles: &[Style], fonts: &[Font], width: f32, page_heig
         faces,
         items: Vec::new(),
         retrying: false,
+        resolve,
+        images: Vec::new(),
+        image_ids: HashMap::new(),
+        ordinal: 0,
+        page_h: page_height,
     };
     let mut flow = Flow {
         page_h: page_height,
         ..Flow::default()
     };
     cx.children(0, 0.0, width, &mut flow);
-    Layout { items: cx.items }
+    Layout {
+        items: cx.items,
+        images: cx.images,
+    }
 }
 
 /// Tolerance for float comparisons against page boundaries.
@@ -70,8 +115,8 @@ struct Flow {
     /// Blocks whose top edge waits for the pending margins.
     waiting: Vec<usize>,
     page_h: f32,
-    /// Top of every line placed so far, in order.
-    line_tops: Vec<f32>,
+    /// Top and baseline of every line placed so far, in order.
+    line_tops: Vec<(f32, f32)>,
 }
 
 /// Flow and output state to roll back to when content moves to the next page.
@@ -179,6 +224,13 @@ struct Ctx<'a> {
     /// Inside a re-layout that moved content to the next page. Nested moves
     /// are skipped so that nested `avoid` boxes cannot cost exponential time.
     retrying: bool,
+    resolve: Resolve<'a>,
+    images: Vec<Image>,
+    /// `src` to image index, or `None` for images that failed to load.
+    image_ids: HashMap<String, Option<usize>>,
+    /// Number of the list item being laid out.
+    ordinal: i64,
+    page_h: f32,
 }
 
 /// Inline content after white-space processing: a text run or a forced break.
@@ -189,6 +241,8 @@ struct Piece {
     /// Background inherited from enclosing inline elements.
     bg: Option<Color>,
     brk: bool,
+    /// Image index, width and height for an `<img>`.
+    image: Option<(usize, f32, f32)>,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -196,6 +250,7 @@ enum Kind {
     Word,
     Space,
     Break,
+    Image,
 }
 
 /// Unit of line breaking: a slice of one piece.
@@ -274,9 +329,23 @@ impl<'a> Ctx<'a> {
         };
         let mut run = Vec::new();
         // The previous block sibling when it has `break-after: avoid`, with the state before it.
-        let mut keep: Option<(Mark, usize)> = None;
+        let mut keep: Option<(Mark, usize, i64)> = None;
+        let number = |id: usize, attr: &str| {
+            dom.element(id)
+                .and_then(|e| e.attr(attr))
+                .and_then(|v| v.trim().parse::<i64>().ok())
+        };
+        let mut ordinal = dom
+            .element(id)
+            .filter(|e| e.tag == "ol")
+            .and_then(|_| number(id, "start"))
+            .unwrap_or(1)
+            .saturating_sub(1);
         for &c in &node.children {
             if self.is_block(c) {
+                if self.style(c).display == Display::ListItem {
+                    ordinal = number(c, "value").unwrap_or(ordinal.saturating_add(1));
+                }
                 if !run.is_empty() {
                     if self.inline(id, &run, x, w, flow) {
                         keep = None;
@@ -285,24 +354,27 @@ impl<'a> Ctx<'a> {
                 }
                 let mut mark = self.mark(flow);
                 let (lines, prev_end) = (flow.line_tops.len(), flow.y);
+                self.ordinal = ordinal;
                 self.block(c, x, w, flow);
-                if let Some((m, prev)) = keep.take()
+                if let Some((m, prev, prev_ordinal)) = keep.take()
                     && !self.retrying
                     && self.style(c).break_before != Break::Page
                     && !flow.at_page_top(m.y)
-                    && let Some(&first) = flow.line_tops.get(lines)
+                    && let Some(&(first, _)) = flow.line_tops.get(lines)
                     && flow.page_top(first) > flow.page_top(prev_end - EPS)
                 {
                     // A page break fell between `prev` and `c`: move `prev` along.
                     self.restore(flow, &m);
                     flow.move_to_next_page(m.y);
                     self.retrying = true;
+                    self.ordinal = prev_ordinal;
                     self.block(prev, x, w, flow);
                     mark = self.mark(flow);
+                    self.ordinal = ordinal;
                     self.block(c, x, w, flow);
                     self.retrying = false;
                 }
-                keep = (self.style(c).break_after == Break::Avoid).then_some((mark, c));
+                keep = (self.style(c).break_after == Break::Avoid).then_some((mark, c, ordinal));
             } else if self.style(c).display != Display::None {
                 run.push(c);
             }
@@ -339,24 +411,40 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    // ponytail: tables and list items lay out as plain blocks until phase 5
     /// Lays out the block box; returns its border-box top and bottom.
     fn block_box(&mut self, id: usize, x: f32, cw: f32, flow: &mut Flow) -> (f32, f32) {
         let s = self.style(id);
+        let ordinal = self.ordinal;
         let pct = |v: Size| match v {
             Size::Pt(p) => p,
             Size::Percent(p) => p * cw / 100.0,
             Size::Auto => 0.0,
         };
+        let is_table = s.display == Display::Table;
         let [bt, br, bb, bl] = s.border_width;
-        let [pt, pr, pb, pl] = s.padding.map(pct);
+        // Tables with collapsed borders have no padding.
+        let [pt, pr, pb, pl] = if is_table && s.border_collapse {
+            [0.0; 4]
+        } else {
+            s.padding.map(pct)
+        };
         let [mt, mr, mb, mut ml] = s.margin.map(pct);
         let edges = bl + pl + pr + br;
-        let width = match s.width {
-            Size::Auto => (cw - ml - mr - edges).max(0.0),
-            w => {
-                let w = pct(w);
-                let content = if s.border_box { w - edges } else { w }.max(0.0);
+        let avail = (cw - ml - mr - edges).max(0.0);
+        let replaced = if self.dom.element(id).is_some_and(|e| e.tag == "img") {
+            self.image_box(id, avail)
+        } else {
+            None
+        };
+        let fixed = match (replaced, s.width) {
+            (Some((_, w, _)), _) => Some(w),
+            (None, Size::Auto) if is_table => Some(self.table_width(id, avail)),
+            (None, Size::Auto) => None,
+            (None, w) => Some(if s.border_box { pct(w) - edges } else { pct(w) }.max(0.0)),
+        };
+        let width = match fixed {
+            None => avail,
+            Some(content) => {
                 let free = (cw - content - edges - ml - mr).max(0.0);
                 // Auto margins absorb the free space; only the left one moves the box.
                 match (s.margin[3], s.margin[1]) {
@@ -368,14 +456,22 @@ impl<'a> Ctx<'a> {
             }
         };
         // ponytail: percentage heights need a definite containing height; treated as auto
-        let height = match s.height {
-            Size::Pt(h) if s.border_box => Some((h - bt - pt - pb - bb).max(0.0)),
-            Size::Pt(h) => Some(h.max(0.0)),
+        let height = match (replaced, s.height) {
+            (Some((_, _, h)), _) => Some(h),
+            (None, Size::Pt(h)) if s.border_box => Some((h - bt - pt - pb - bb).max(0.0)),
+            (None, Size::Pt(h)) => Some(h.max(0.0)),
             _ => None,
         };
 
         flow.margin(mt);
         let slot = flow.open();
+        if let Some((_, _, h)) = replaced {
+            // An image is one unit: it moves to the next page whole.
+            let start = flow.y + flow.collapsed();
+            if flow.crosses(start, bt + pt + h + pb + bb) {
+                flow.move_to_next_page(start);
+            }
+        }
         if bt > 0.0 || pt > 0.0 || height.is_some() {
             flow.resolve();
         }
@@ -397,7 +493,27 @@ impl<'a> Ctx<'a> {
             });
         }
 
-        self.children(id, x + ml + bl + pl, width, flow);
+        let content_x = x + ml + bl + pl;
+        if let Some((image, w, h)) = replaced {
+            self.items.push(Item::Image {
+                x: content_x,
+                y: content_top,
+                w,
+                h,
+                image,
+            });
+            flow.line_tops.push((content_top, content_top + h));
+        } else if is_table {
+            self.table(id, content_x, width, flow);
+        } else {
+            let lines = flow.line_tops.len();
+            self.children(id, content_x, width, flow);
+            if s.display == Display::ListItem
+                && let Some(&(_, baseline)) = flow.line_tops.get(lines)
+            {
+                self.marker(s, ordinal, content_x, baseline);
+            }
+        }
 
         if let Some(h) = height {
             flow.resolve();
@@ -437,7 +553,105 @@ impl<'a> Ctx<'a> {
         (top, bottom)
     }
 
-    fn collect(&self, id: usize, bg: Option<Color>, prev_space: &mut bool, out: &mut Vec<Piece>) {
+    /// Loads an `<img>` and sizes it to fit `avail` width and the page height.
+    fn image_box(&mut self, id: usize, avail: f32) -> Option<(usize, f32, f32)> {
+        let dom = self.dom;
+        let el = dom.element(id)?;
+        let src = el.attr("src")?;
+        let index = match self.image_ids.get(src) {
+            Some(known) => (*known)?,
+            None => {
+                let loaded = image::data_uri(src)
+                    .or_else(|| (self.resolve)(src))
+                    .and_then(|bytes| image::decode(&bytes))
+                    .map(|img| {
+                        self.images.push(img);
+                        self.images.len() - 1
+                    });
+                self.image_ids.insert(src.to_owned(), loaded);
+                loaded?
+            }
+        };
+        let img = self.images.get(index)?;
+        // Pixels are CSS px.
+        let (nw, nh) = (img.width as f32 * 0.75, img.height as f32 * 0.75);
+        let s = self.style(id);
+        let attr = |name: &str| {
+            let v: f32 = el.attr(name)?.trim().trim_end_matches("px").parse().ok()?;
+            (v.is_finite() && v >= 0.0).then_some(v * 0.75)
+        };
+        let w = match s.width {
+            Size::Pt(v) => Some(v),
+            Size::Percent(p) if avail.is_finite() => Some(p * avail / 100.0),
+            _ => attr("width"),
+        };
+        let h = match s.height {
+            Size::Pt(v) => Some(v),
+            _ => attr("height"),
+        };
+        let (mut w, mut h) = match (w, h) {
+            (Some(w), Some(h)) => (w, h),
+            (Some(w), None) => (w, w * nh / nw),
+            (None, Some(h)) => (h * nw / nh, h),
+            (None, None) => (nw, nh),
+        };
+        // Scale down to fit the line and the page.
+        if w > avail && w > 0.0 {
+            h *= avail / w;
+            w = avail;
+        }
+        if self.page_h.is_finite() && h > self.page_h && h > 0.0 {
+            w *= self.page_h / h;
+            h = self.page_h;
+        }
+        Some((index, w.max(0.0), h.max(0.0)))
+    }
+
+    /// List marker, ending where the item's content starts (outside position).
+    fn marker(&mut self, s: &Style, ordinal: i64, content_x: f32, baseline: f32) {
+        let font = self.font_for(s);
+        let Some(f) = self.fonts.get(font) else {
+            return;
+        };
+        let bullet = |options: &[char]| {
+            let c = options
+                .iter()
+                .copied()
+                .find(|&c| f.glyph(c) != 0)
+                .unwrap_or('-');
+            format!("{c} ")
+        };
+        let text = match s.list_style {
+            ListStyle::None => return,
+            ListStyle::Disc => bullet(&['•', '·']),
+            ListStyle::Circle => bullet(&['◦', '○', '•']),
+            ListStyle::Square => bullet(&['▪', '■', '•']),
+            ListStyle::Decimal => format!("{ordinal}. "),
+            ListStyle::LowerAlpha => format!("{}. ", alpha(ordinal).to_lowercase()),
+            ListStyle::UpperAlpha => format!("{}. ", alpha(ordinal)),
+            ListStyle::LowerRoman => format!("{}. ", roman(ordinal).to_lowercase()),
+            ListStyle::UpperRoman => format!("{}. ", roman(ordinal)),
+        };
+        let width = f.measure(&text, s.font_size);
+        self.items.push(Item::Text {
+            x: content_x - width,
+            y: baseline,
+            font,
+            size: s.font_size,
+            color: s.color,
+            word_spacing: 0.0,
+            text,
+        });
+    }
+
+    fn collect(
+        &mut self,
+        id: usize,
+        bg: Option<Color>,
+        avail: f32,
+        prev_space: &mut bool,
+        out: &mut Vec<Piece>,
+    ) {
         let Some(node) = self.dom.nodes.get(id) else {
             return;
         };
@@ -461,6 +675,7 @@ impl<'a> Ctx<'a> {
                     font,
                     bg,
                     brk,
+                    image: None,
                 };
                 for c in t.chars() {
                     match c {
@@ -487,20 +702,25 @@ impl<'a> Ctx<'a> {
                 out.push(piece(text, false));
             }
             NodeData::Element(el) if s.display != Display::None => {
-                if el.tag == "br" {
-                    out.push(Piece {
-                        node: id,
-                        text: String::new(),
-                        font: 0,
-                        bg,
-                        brk: true,
-                    });
-                    *prev_space = true;
+                let brk = el.tag == "br";
+                if brk || el.tag == "img" {
+                    let image = if brk { None } else { self.image_box(id, avail) };
+                    if brk || image.is_some() {
+                        out.push(Piece {
+                            node: id,
+                            text: String::new(),
+                            font: 0,
+                            bg,
+                            brk,
+                            image,
+                        });
+                        *prev_space = brk;
+                    }
                     return;
                 }
                 let bg = s.background.or(bg);
                 for &c in &node.children {
-                    self.collect(c, bg, prev_space, out);
+                    self.collect(c, bg, avail, prev_space, out);
                 }
             }
             _ => {}
@@ -513,7 +733,7 @@ impl<'a> Ctx<'a> {
         let mut pieces = Vec::new();
         let mut prev_space = true;
         for &id in run {
-            self.collect(id, None, &mut prev_space, &mut pieces);
+            self.collect(id, None, w, &mut prev_space, &mut pieces);
         }
         let atoms = self.atoms(&pieces);
         let indent = match cs.text_indent {
@@ -534,6 +754,10 @@ impl<'a> Ctx<'a> {
                     .iter()
                     .filter_map(|a| pieces.get(a.piece))
                     .fold(strut, |(ab, be), p| {
+                        // Images sit on the baseline.
+                        if let Some((_, _, h)) = p.image {
+                            return (ab.max(h), be);
+                        }
                         let s = self.style(p.node);
                         let (a, b) = self.metrics(p.font, s.font_size, s.line_height);
                         (ab.max(a), be.max(b))
@@ -560,8 +784,8 @@ impl<'a> Ctx<'a> {
             let (Some(&top), Some(&(above, below))) = (tops.get(i), heights.get(i)) else {
                 continue;
             };
-            flow.line_tops.push(top);
             let baseline = top + above;
+            flow.line_tops.push((top, baseline));
             let avail = if i == 0 { w - indent } else { w };
             let free = (avail - line.width).max(0.0);
             let spaces: usize = line
@@ -586,6 +810,17 @@ impl<'a> Ctx<'a> {
                 let Some(p) = pieces.get(first.piece) else {
                     continue;
                 };
+                if let Some((image, w, h)) = p.image {
+                    self.items.push(Item::Image {
+                        x: pen,
+                        y: baseline - h,
+                        w,
+                        h,
+                        image,
+                    });
+                    pen += w;
+                    continue;
+                }
                 let Some(text) = p.text.get(first.start..last.end) else {
                     continue;
                 };
@@ -684,6 +919,16 @@ impl<'a> Ctx<'a> {
                 });
                 continue;
             }
+            if let Some((_, width, _)) = p.image {
+                atoms.push(Atom {
+                    piece: i,
+                    start: 0,
+                    end: 0,
+                    width,
+                    kind: Kind::Image,
+                });
+                continue;
+            }
             let (Some(font), s) = (self.fonts.get(p.font), self.style(p.node)) else {
                 continue;
             };
@@ -742,7 +987,8 @@ impl<'a> Ctx<'a> {
             let width = atoms.iter().map(|a| a.width).sum();
             lines.push(Line { atoms, width, last });
         };
-        let avail = |lines: &Vec<Line>| if lines.is_empty() { w - indent } else { w };
+        // EPS: content measured to exactly the line width must still fit.
+        let avail = |lines: &Vec<Line>| if lines.is_empty() { w - indent } else { w } + EPS;
 
         for atom in atoms {
             match atom.kind {
@@ -752,19 +998,32 @@ impl<'a> Ctx<'a> {
                         cur.push(atom);
                     }
                 }
-                Kind::Word => {
+                Kind::Word | Kind::Image => {
                     let width: f32 = cur.iter().map(|a| a.width).sum();
+                    // Lines break after spaces and around images.
+                    let can_break = |before: &Atom, after: &Atom| {
+                        before.kind == Kind::Space
+                            || before.kind == Kind::Image
+                            || after.kind == Kind::Image
+                    };
                     if width + atom.width > avail(&lines)
                         && wraps(&atom)
-                        && let Some(sp) = cur.iter().rposition(|a| a.kind == Kind::Space)
+                        && let Some(at) = (1..=cur.len()).rev().find(|&i| {
+                            cur.get(i - 1)
+                                .is_some_and(|b| can_break(b, cur.get(i).unwrap_or(&atom)))
+                        })
                     {
-                        let rest = cur.split_off(sp + 1);
+                        let rest = cur.split_off(at);
                         finish(&mut lines, std::mem::replace(&mut cur, rest), false);
                     }
-                    if cur.is_empty() && atom.width > avail(&lines) && wraps(&atom) {
+                    if atom.kind == Kind::Word
+                        && cur.is_empty()
+                        && atom.width > avail(&lines)
+                        && wraps(&atom)
+                    {
                         // A word wider than the line: break it between characters.
                         let mut part = atom;
-                        for piece in self.split_word(pieces, atom, avail(&lines), w) {
+                        for piece in self.split_word(pieces, atom, avail(&lines), w + EPS) {
                             if part.start != piece.start {
                                 finish(&mut lines, std::mem::take(&mut cur), false);
                             }
@@ -820,6 +1079,51 @@ impl<'a> Ctx<'a> {
         });
         parts
     }
+}
+
+/// Bijective base-26: 1 → A, 26 → Z, 27 → AA. Non-positive numbers stay decimal.
+fn alpha(mut n: i64) -> String {
+    if n <= 0 {
+        return n.to_string();
+    }
+    let mut out = Vec::new();
+    while n > 0 {
+        n -= 1;
+        out.push(char::from(b'A' + (n % 26) as u8));
+        n /= 26;
+    }
+    out.iter().rev().collect()
+}
+
+/// Roman numerals for 1..=3999; anything else stays decimal.
+fn roman(n: i64) -> String {
+    if !(1..=3999).contains(&n) {
+        return n.to_string();
+    }
+    const DIGITS: [(i64, &str); 13] = [
+        (1000, "M"),
+        (900, "CM"),
+        (500, "D"),
+        (400, "CD"),
+        (100, "C"),
+        (90, "XC"),
+        (50, "L"),
+        (40, "XL"),
+        (10, "X"),
+        (9, "IX"),
+        (5, "V"),
+        (4, "IV"),
+        (1, "I"),
+    ];
+    let mut n = n;
+    let mut out = String::new();
+    for (value, digits) in DIGITS {
+        while n >= value {
+            out.push_str(digits);
+            n -= value;
+        }
+    }
+    out
 }
 
 /// Tops of lines with `heights` (above, below the baseline) starting at
@@ -891,7 +1195,7 @@ mod tests {
         let fonts = [Font::new(NOTO).unwrap()];
         let dom = html::parse(src);
         let styled = style::cascade(&dom);
-        layout(&dom, &styled.styles, &fonts, width, page_h)
+        layout(&dom, &styled.styles, &fonts, width, page_h, &|_| None)
     }
 
     /// Line tops (baseline minus the 12pt line's ascent share) grouped by page.
@@ -1148,6 +1452,172 @@ mod tests {
         assert_eq!(r.len(), 2);
         assert!(r[0].1 > texts(&l)[1].1, "underline below baseline");
         assert!(r[1].1 < texts(&l)[2].1, "background above baseline");
+    }
+
+    fn with_images(src: &str, width: f32, page_h: f32) -> Layout {
+        // Header-only JPEG, 400x200 px: the decoder reads nothing past the frame header.
+        let jpeg = [
+            0xFF, 0xD8, 0xFF, 0xC0, 0, 11, 8, 0, 200, 1, 144, 3, 1, 0x11, 0,
+        ];
+        let fonts = [Font::new(NOTO).unwrap()];
+        let dom = html::parse(src);
+        let styled = style::cascade(&dom);
+        let resolve = |s: &str| (s == "a.jpg").then(|| jpeg.to_vec());
+        layout(&dom, &styled.styles, &fonts, width, page_h, &resolve)
+    }
+
+    fn images(l: &Layout) -> Vec<(f32, f32, f32, f32)> {
+        l.items
+            .iter()
+            .filter_map(|i| match i {
+                Item::Image { x, y, w, h, .. } => Some((*x, *y, *w, *h)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn inline_and_block_images() {
+        let l = with_images(
+            &format!("{BODY}<p>a <img src=a.jpg> b <img src=missing.png></p>"),
+            500.0,
+            f32::INFINITY,
+        );
+        assert_eq!(l.images.len(), 1);
+        let img = images(&l);
+        assert_eq!(img.len(), 1);
+        let (x, y, w, h) = img[0];
+        assert_eq!((w, h), (300.0, 150.0));
+        // Bottom on the baseline of the line, after "a ".
+        let t = texts(&l);
+        assert!((y + h - t[0].1).abs() < 0.01 && x > 0.0);
+        // Too wide for the line: scaled down; too tall for the page: scaled again.
+        let l = with_images(
+            &format!(
+                "{BODY}<img src=a.jpg width=100>x<img src=a.jpg style='display:block; margin: 0 auto'>"
+            ),
+            150.0,
+            60.0,
+        );
+        let img = images(&l);
+        assert_eq!((img[0].2, img[0].3), (75.0, 37.5));
+        assert_eq!((img[1].2, img[1].3), (120.0, 60.0));
+        assert_eq!(img[1].0, 15.0);
+        assert_eq!(l.images.len(), 1, "loaded once");
+    }
+
+    #[test]
+    fn list_markers() {
+        let l = lay(
+            &format!(
+                "{BODY}<ol start=3><li>a<li value=10>b<li>c</ol><ul><li>d</ul><ol style='list-style: upper-roman'><li>e<li>f</ol>"
+            ),
+            200.0,
+        );
+        let markers: Vec<_> = texts(&l)
+            .into_iter()
+            .map(|t| t.2)
+            .filter(|t| t.ends_with(' '))
+            .collect();
+        assert_eq!(markers, ["3. ", "10. ", "11. ", "• ", "I. ", "II. "]);
+        let nested = lay(
+            &format!("{BODY}<ol><li>a<ul><li>b<ul><li>c</ul></ul></ol>"),
+            200.0,
+        );
+        let mut markers: Vec<_> = texts(&nested)
+            .into_iter()
+            .filter(|t| t.2.ends_with(' '))
+            .collect();
+        markers.sort_by(|a, b| a.1.total_cmp(&b.1));
+        // Nested lists under an <ol> get bullets, not numbers; Noto Sans has no
+        // ◦ or ▪, so both fall back to •.
+        assert_eq!(
+            markers.iter().map(|t| t.2).collect::<Vec<_>>(),
+            ["1. ", "• ", "• "]
+        );
+        let items = texts(&l);
+        // Marker ends where the content starts, on the same baseline.
+        let fonts = [Font::new(NOTO).unwrap()];
+        assert_eq!(items[1].1, items[0].1);
+        assert!((items[1].0 + fonts[0].measure("3. ", 10.0) - items[0].0).abs() < 0.01);
+    }
+
+    #[test]
+    fn table_columns() {
+        let fonts = [Font::new(NOTO).unwrap()];
+        let l = lay(
+            &format!(
+                "{BODY}<table style='border-spacing: 0'><tr><td>aaaa</td><td>b</td></tr><tr><td colspan=2>c</td></tr></table>"
+            ),
+            300.0,
+        );
+        let t = texts(&l);
+        let (a, b, c) = (t[0], t[1], t[2]);
+        // Shrink-to-fit: column 2 starts right after column 1's content plus padding.
+        let pad = 0.75;
+        assert!((b.0 - (a.0 + fonts[0].measure("aaaa", 10.0) + 2.0 * pad)).abs() < 0.01);
+        assert_eq!(a.0, c.0);
+        assert!(c.1 > a.1);
+    }
+
+    #[test]
+    fn content_exactly_as_wide_as_the_cell_fits() {
+        let l = lay(
+            &format!(
+                "{BODY}<table style='width: 100%; border-collapse: collapse'><tr>\
+                <td style='padding: 3pt 6pt; border: 1px solid'>10</td><td>{}</td></tr></table>",
+                "long words ".repeat(30)
+            ),
+            300.0,
+        );
+        assert_eq!(texts(&l)[0].2, "10");
+    }
+
+    #[test]
+    fn table_width_and_alignment() {
+        let l = lay(
+            &format!(
+                "{BODY}<table style='width: 200pt; border-collapse: collapse'>\
+                <tr><td style='background: red'>x</td><td>y<br>y<br>y</td></tr></table>"
+            ),
+            300.0,
+        );
+        let r = rects(&l);
+        // Equal content: the 200pt split about evenly (extra goes by max width).
+        assert!((r[0].2 - 100.0).abs() < 2.0, "{r:?}");
+        assert!(r[0].3 > 36.0, "background spans the row: {r:?}");
+        let t = texts(&l);
+        // Middle alignment: x sits on the second y line.
+        assert!((t[0].1 - t[2].1).abs() < 0.01, "{t:?}");
+    }
+
+    #[test]
+    fn table_rows_and_header_repeat() {
+        let rows: String = (1..=8).map(|i| format!("<tr><td>r{i}</td></tr>")).collect();
+        let src = format!(
+            "{BODY}<table style='border-spacing: 0'><thead><tr><th>H</th></tr></thead><tbody>{rows}</tbody></table>"
+        );
+        let l = paged(&src, 100.0, 50.0);
+        let p = pages(&l, 50.0);
+        assert!(p.len() > 1);
+        for page in &p {
+            assert_eq!(page[0], "H", "{p:?}");
+        }
+        let all: Vec<_> = p.concat().into_iter().filter(|t| t != "H").collect();
+        assert_eq!(all, (1..=8).map(|i| format!("r{i}")).collect::<Vec<_>>());
+    }
+
+    #[test]
+    fn rowspan_grid() {
+        let l = lay(
+            &format!(
+                "{BODY}<table><tr><td rowspan=2>a</td><td>b</td></tr><tr><td>c</td></tr></table>"
+            ),
+            300.0,
+        );
+        let t = texts(&l);
+        let (b, c) = (t[1], t[2]);
+        assert_eq!(b.0, c.0, "c goes in the second column");
     }
 
     #[test]

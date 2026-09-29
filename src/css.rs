@@ -112,6 +112,14 @@ pub enum Break {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VerticalAlign {
+    Baseline,
+    Top,
+    Middle,
+    Bottom,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListStyle {
     None,
     Disc,
@@ -179,6 +187,11 @@ pub enum Decl {
     ListStyle(ListStyle),
     /// `true` for `border-box`.
     BorderBox(bool),
+    VerticalAlign(VerticalAlign),
+    /// `true` for `collapse`.
+    BorderCollapse(bool),
+    /// Horizontal and vertical.
+    BorderSpacing(Length, Length),
     /// `inherit` for the named longhand.
     Inherit(&'static str),
 }
@@ -226,6 +239,9 @@ pub const LONGHANDS: &[&str] = &[
     "widows",
     "list-style-type",
     "box-sizing",
+    "vertical-align",
+    "border-collapse",
+    "border-spacing",
 ];
 
 const SIDES: [&str; 4] = ["top", "right", "bottom", "left"];
@@ -589,6 +605,29 @@ fn expand(name: &str, value: &str) -> Option<Vec<Decl>> {
         "orphans" => one(Decl::Orphans(value.parse().ok().filter(|n| *n > 0)?)),
         "widows" => one(Decl::Widows(value.parse().ok().filter(|n| *n > 0)?)),
         "list-style-type" => one(Decl::ListStyle(list_style(value)?)),
+        "vertical-align" => one(Decl::VerticalAlign(match value {
+            "top" | "text-top" => VerticalAlign::Top,
+            "middle" => VerticalAlign::Middle,
+            "bottom" | "text-bottom" => VerticalAlign::Bottom,
+            // ponytail: sub, super and lengths sit on the baseline
+            _ => VerticalAlign::Baseline,
+        })),
+        "border-collapse" => match value {
+            "collapse" => one(Decl::BorderCollapse(true)),
+            "separate" => one(Decl::BorderCollapse(false)),
+            _ => None,
+        },
+        "border-spacing" => {
+            let len = |t: &str| match non_negative(t)? {
+                l @ (Length::Pt(_) | Length::Em(_) | Length::Rem(_)) => Some(l),
+                _ => None,
+            };
+            match tokens.as_slice() {
+                [a] => one(Decl::BorderSpacing(len(a)?, len(a)?)),
+                [a, b] => one(Decl::BorderSpacing(len(a)?, len(b)?)),
+                _ => None,
+            }
+        }
         "box-sizing" => match value {
             "content-box" => one(Decl::BorderBox(false)),
             "border-box" => one(Decl::BorderBox(true)),

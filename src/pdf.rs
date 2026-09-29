@@ -11,9 +11,11 @@ use miniz_oxide::deflate::compress_to_vec_zlib;
 
 use crate::css::Color;
 use crate::font::Font;
+use crate::image::Image;
 
 pub struct Document<'f> {
     fonts: Vec<FontUse<'f>>,
+    images: Vec<Image>,
     pages: Vec<Page>,
 }
 
@@ -61,6 +63,7 @@ impl<'f> Document<'f> {
                     used: BTreeMap::new(),
                 })
                 .collect(),
+            images: Vec::new(),
             pages: Vec::new(),
         }
     }
@@ -121,14 +124,38 @@ impl<'f> Document<'f> {
         );
     }
 
+    /// Registers an image; returns its index for [`image`](Self::image).
+    pub fn add_image(&mut self, image: Image) -> usize {
+        self.images.push(image);
+        self.images.len() - 1
+    }
+
+    /// Draws image `index` into the rectangle given by its top-left corner.
+    pub fn image(&mut self, x: f32, y: f32, w: f32, h: f32, index: usize) {
+        let Some(page) = self.pages.last_mut() else {
+            return;
+        };
+        if index < self.images.len() {
+            let _ = writeln!(
+                page.content,
+                "q {} 0 0 {} {} {} cm /Im{index} Do Q",
+                num(w),
+                num(h),
+                num(x),
+                num(page.height - y - h)
+            );
+        }
+    }
+
     pub fn finish(self) -> Vec<u8> {
         let mut w = Writer::default();
         w.out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
 
         // Fixed object numbers: 1 catalog, 2 page tree, 3 shared resources,
-        // then 5 per font, then 2 per page.
+        // then 5 per font, 2 per image (image, soft mask), 2 per page.
         let font_base = 4;
-        let page_base = font_base + 5 * self.fonts.len();
+        let image_base = font_base + 5 * self.fonts.len();
+        let page_base = image_base + 2 * self.images.len();
         let page_id = |i: usize| page_base + 2 * i;
 
         w.obj(1, "<< /Type /Catalog /Pages 2 0 R >>");
@@ -147,10 +174,36 @@ impl<'f> Document<'f> {
         let fonts: String = (0..self.fonts.len())
             .map(|i| format!("/F{i} {} 0 R ", font_base + 5 * i))
             .collect();
-        w.obj(3, &format!("<< /Font << {fonts}>> >>"));
+        let images: String = (0..self.images.len())
+            .map(|i| format!("/Im{i} {} 0 R ", image_base + 2 * i))
+            .collect();
+        w.obj(
+            3,
+            &format!("<< /Font << {fonts}>> /XObject << {images}>> >>"),
+        );
 
         for (i, f) in self.fonts.iter().enumerate() {
             write_font(&mut w, font_base + 5 * i, i, f);
+        }
+
+        for (i, img) in self.images.iter().enumerate() {
+            let id = image_base + 2 * i;
+            let mut dict = format!(
+                "/Type /XObject /Subtype /Image /Width {} /Height {} {}",
+                img.width, img.height, img.dict
+            );
+            if let Some((mask_dict, mask)) = &img.smask {
+                let _ = write!(dict, " /SMask {} 0 R", id + 1);
+                w.raw_stream(
+                    id + 1,
+                    &format!(
+                        "/Type /XObject /Subtype /Image /Width {} /Height {} {mask_dict}",
+                        img.width, img.height
+                    ),
+                    mask,
+                );
+            }
+            w.raw_stream(id, &dict, &img.data);
         }
 
         for (i, page) in self.pages.iter().enumerate() {
@@ -315,11 +368,25 @@ impl Writer {
         self.out.extend_from_slice(b"\nendstream\nendobj\n");
     }
 
+    /// Stream whose data is already encoded as `dict` says.
+    fn raw_stream(&mut self, id: usize, dict: &str, data: &[u8]) {
+        self.start(id);
+        self.out
+            .extend_from_slice(format!("<< {dict} /Length {} >>\nstream\n", data.len()).as_bytes());
+        self.out.extend_from_slice(data);
+        self.out.extend_from_slice(b"\nendstream\nendobj\n");
+    }
+
     fn finish(mut self) -> Vec<u8> {
         let xref = self.out.len();
         let mut table = format!("xref\n0 {}\n0000000000 65535 f \n", self.offsets.len() + 1);
         for off in &self.offsets {
-            let _ = writeln!(table, "{off:010} 00000 n ");
+            // Offset 0 is the header, so it marks an unused object number.
+            if *off == 0 {
+                table.push_str("0000000000 65535 f \n");
+            } else {
+                let _ = writeln!(table, "{off:010} 00000 n ");
+            }
         }
         let _ = write!(
             table,

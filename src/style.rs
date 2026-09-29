@@ -4,7 +4,7 @@ use std::rc::Rc;
 
 use crate::css::{
     self, Break, Color, Combinator, Compound, Decl, Decoration, Display, FontWeight, Length,
-    LineHeight, ListStyle, PageRule, Selector, Sheet, TextAlign, WhiteSpace,
+    LineHeight, ListStyle, PageRule, Selector, Sheet, TextAlign, VerticalAlign, WhiteSpace,
 };
 use crate::html::{self, Dom, Element, NodeData};
 
@@ -48,6 +48,10 @@ pub struct Style {
     pub orphans: u32,
     pub widows: u32,
     pub list_style: ListStyle,
+    pub vertical_align: VerticalAlign,
+    pub border_collapse: bool,
+    /// Horizontal and vertical, points.
+    pub border_spacing: (f32, f32),
 }
 
 /// 16px, the browser default.
@@ -81,6 +85,9 @@ impl Style {
             orphans: 2,
             widows: 2,
             list_style: ListStyle::Disc,
+            vertical_align: VerticalAlign::Baseline,
+            border_collapse: false,
+            border_spacing: (0.0, 0.0),
         }
     }
 
@@ -99,6 +106,7 @@ impl Style {
             break_before: Break::Auto,
             break_after: Break::Auto,
             break_inside: Break::Auto,
+            vertical_align: VerticalAlign::Baseline,
             ..parent.clone()
         }
     }
@@ -116,7 +124,9 @@ address, article, aside, footer, header, main, nav, section, figure, figcaption,
 fieldset, center, details, summary, legend { display: block }
 head, style, script, title, meta, link, template, base { display: none }
 li { display: list-item }
-table { display: table }
+table { display: table; border-spacing: 2px; box-sizing: border-box }
+thead, tbody, tfoot { vertical-align: middle }
+tr, td, th { vertical-align: inherit }
 caption { display: table-caption; text-align: center }
 thead { display: table-header-group }
 tbody { display: table-row-group }
@@ -131,6 +141,9 @@ blockquote, figure { margin: 1em 40px }
 ul, ol { margin: 1em 0; padding-left: 40px }
 ul ul, ul ol, ol ul, ol ol { margin: 0 }
 ol { list-style-type: decimal }
+ul { list-style-type: disc }
+ul ul, ol ul { list-style-type: circle }
+ul ul ul, ol ul ul, ul ol ul, ol ol ul { list-style-type: square }
 dd { margin-left: 40px }
 h1 { font-size: 2em; margin: .67em 0 }
 h2 { font-size: 1.5em; margin: .83em 0 }
@@ -327,6 +340,9 @@ fn apply(s: &mut Style, parent: &Style, decl: &Decl, rem: f32) {
         Decl::Widows(n) => s.widows = *n,
         Decl::ListStyle(l) => s.list_style = *l,
         Decl::BorderBox(b) => s.border_box = *b,
+        Decl::VerticalAlign(v) => s.vertical_align = *v,
+        Decl::BorderCollapse(c) => s.border_collapse = *c,
+        Decl::BorderSpacing(h, v) => s.border_spacing = (abs(*h, em, rem), abs(*v, em, rem)),
         Decl::Inherit(name) => inherit_one(s, parent, name),
     }
 }
@@ -379,6 +395,9 @@ fn inherit_one(s: &mut Style, p: &Style, name: &str) {
         "widows" => s.widows = p.widows,
         "list-style-type" => s.list_style = p.list_style,
         "box-sizing" => s.border_box = p.border_box,
+        "vertical-align" => s.vertical_align = p.vertical_align,
+        "border-collapse" => s.border_collapse = p.border_collapse,
+        "border-spacing" => s.border_spacing = p.border_spacing,
         _ => {}
     }
 }

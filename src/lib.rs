@@ -12,6 +12,7 @@ mod css;
 mod error;
 mod font;
 mod html;
+mod image;
 mod layout;
 mod pdf;
 mod style;
@@ -25,6 +26,9 @@ use layout::Item;
 /// Guards against runaway output from absurd lengths in the input.
 const MAX_PAGES: usize = 100_000;
 
+/// Returns the bytes behind a resource URL, or `None` if it is unavailable.
+pub type Loader<'a> = Box<dyn Fn(&str) -> Option<Vec<u8>> + 'a>;
+
 pub struct Options<'a> {
     /// Fonts to lay out with. CSS `font-family` picks among them by family
     /// name; families not found here, including generic ones like
@@ -34,6 +38,10 @@ pub struct Options<'a> {
     pub page_size: (f32, f32),
     /// Top, right, bottom, left page margins in points, unless the document sets `@page { margin }`.
     pub margin: [f32; 4],
+    /// Loads `<img src>` values other than `data:` URIs, for example from
+    /// disk. JPEG and PNG are supported; images that fail to load or decode
+    /// are left out.
+    pub resources: Option<Loader<'a>>,
 }
 
 impl<'a> Options<'a> {
@@ -44,6 +52,7 @@ impl<'a> Options<'a> {
             fonts,
             page_size: (595.28, 841.89),
             margin: [cm; 4],
+            resources: None,
         }
     }
 }
@@ -65,12 +74,15 @@ pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
         }
     });
     let page_h = (ph - mt - mb).max(1.0);
+    let none = |_: &str| None;
+    let resolve: layout::Resolve = opts.resources.as_deref().unwrap_or(&none);
     let lay = layout::layout(
         &dom,
         &styled.styles,
         &opts.fonts,
         (pw - ml - mr).max(0.0),
         page_h,
+        resolve,
     );
 
     // Items sorted onto pages; a rect crossing page boundaries is cut into pieces.
@@ -84,7 +96,7 @@ pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
             pages.resize_with(p + 1, Vec::new);
         }
         if let Some(list) = pages.get_mut(p) {
-            list.push(item);
+            list.push(item.shifted(ml, mt - p as f32 * page_h));
         }
         Ok(())
     };
@@ -98,7 +110,7 @@ pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
                         p,
                         Item::Rect {
                             x,
-                            y: y0 - top,
+                            y: y0,
                             w,
                             h: y1 - y0,
                             color,
@@ -106,14 +118,8 @@ pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
                     )?;
                 }
             }
-            Item::Text { y, color, .. } if color.a > 0 => {
-                let p = page(y);
-                let mut item = item;
-                if let Item::Text { y: iy, .. } = &mut item {
-                    *iy = y - p as f32 * page_h;
-                }
-                put(p, item)?;
-            }
+            Item::Text { y, color, .. } if color.a > 0 => put(page(y), item)?,
+            Item::Image { y, .. } => put(page(y), item)?,
             _ => {}
         }
     }
@@ -122,11 +128,15 @@ pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
     }
 
     let mut doc = pdf::Document::new(&opts.fonts);
+    for img in lay.images {
+        doc.add_image(img);
+    }
     for items in &pages {
         doc.add_page(pw, ph);
         for item in items {
             match item {
-                Item::Rect { x, y, w, h, color } => doc.rect(x + ml, y + mt, *w, *h, *color),
+                Item::Rect { x, y, w, h, color } => doc.rect(*x, *y, *w, *h, *color),
+                Item::Image { x, y, w, h, image } => doc.image(*x, *y, *w, *h, *image),
                 Item::Text {
                     x,
                     y,
@@ -136,8 +146,8 @@ pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
                     word_spacing,
                     text,
                 } => doc.text(
-                    x + ml,
-                    y + mt,
+                    *x,
+                    *y,
                     &pdf::Text {
                         font: *font,
                         size: *size,

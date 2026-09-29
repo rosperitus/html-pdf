@@ -359,12 +359,32 @@ impl Builder {
         if CLOSES_P.contains(&tag.as_str()) {
             self.close_nearest(&["p"], SCOPE);
         }
+        // Rows live in a row group and cells in a row, as a browser implies them.
+        let parent = self.tag(self.current()).to_string();
+        let group = matches!(parent.as_str(), "thead" | "tbody" | "tfoot");
+        match tag.as_str() {
+            "tr" if parent == "table" => self.implied("tbody"),
+            "td" | "th" if parent == "table" => {
+                self.implied("tbody");
+                self.implied("tr");
+            }
+            "td" | "th" if group => self.implied("tr"),
+            _ => {}
+        }
         let void = VOID.contains(&tag.as_str());
         let id = self.push_node(NodeData::Element(Element { tag, attrs }));
         // Past the depth limit elements become siblings, which bounds recursion downstream.
         if !void && self.stack.len() < MAX_DEPTH {
             self.stack.push(id);
         }
+    }
+
+    fn implied(&mut self, tag: &str) {
+        let id = self.push_node(NodeData::Element(Element {
+            tag: tag.into(),
+            attrs: Vec::new(),
+        }));
+        self.stack.push(id);
     }
 
     fn end(&mut self, tag: &str) {
@@ -573,9 +593,13 @@ mod tests {
         );
         assert_eq!(
             tree("<table><tr><td>1<td>2<tr><td>3</table>x"),
-            r#"table(tr(td("1") td("2")) tr(td("3"))) "x""#
+            r#"table(tbody(tr(td("1") td("2")) tr(td("3")))) "x""#
         );
         assert_eq!(tree("<td><p>a<table></table>"), r#"td(p("a") table)"#);
+        assert_eq!(
+            tree("<table><thead><th>h<tbody><td>1</table>"),
+            r#"table(thead(tr(th("h"))) tbody(tr(td("1"))))"#
+        );
     }
 
     #[test]

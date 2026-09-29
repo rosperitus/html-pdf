@@ -74,3 +74,48 @@ fn paginates() {
     .unwrap();
     assert_eq!(pdf.windows(12).filter(|w| w == b"/Type /Page ").count(), 2);
 }
+
+/// 2x2 half-transparent red PNG.
+const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAEUlEQVR4nGP4z8DQAMIMMAYAOOgF/REzMMkAAAAASUVORK5CYII=";
+
+#[test]
+fn embeds_images() {
+    let opts = Options::new(vec![Font::new(NOTO).unwrap()]);
+    let pdf = render(
+        &format!("<p>x <img src='{PNG}' width=20> <img src='{PNG}'></p><img src=nope.png>"),
+        &opts,
+    )
+    .unwrap();
+    assert!(find(&pdf, b"/XObject << /Im0 "));
+    assert!(!find(&pdf, b"/Im1"), "one image, drawn twice");
+    // The image and its soft mask.
+    assert_eq!(
+        pdf.windows(16).filter(|w| w == b"/Subtype /Image ").count(),
+        2
+    );
+    assert!(find(&pdf, b"/SMask"));
+    let mut opts = opts;
+    opts.resources = Some(Box::new(|src| (src == "logo.png").then(Vec::new)));
+    render("<img src=logo.png>", &opts).unwrap();
+}
+
+#[test]
+fn survives_hostile_tables() {
+    let opts = Options::new(vec![Font::new(NOTO).unwrap()]);
+    let nested = format!(
+        "{}x{}",
+        "<table><tr><td>".repeat(200),
+        "</td></tr></table>".repeat(200)
+    );
+    let rows = "<tr><td>a<td>b</tr>".repeat(5000);
+    for src in [
+        "<table><tr><td colspan=99999999 rowspan=99999999>x</table>".to_string(),
+        "<table><tr><td colspan=1000>a<td>b</table>".to_string(),
+        "<table></table><table><tr></tr></table><table><caption>c</caption></table>".to_string(),
+        "<td>stray cell<tr>stray row".to_string(),
+        nested,
+        format!("<table><thead><tr><th>h</thead>{rows}</table>"),
+    ] {
+        render(&src, &opts).unwrap();
+    }
+}
