@@ -1,0 +1,368 @@
+//! Minimal PDF 1.7 writer: pages, text in embedded TrueType fonts.
+//!
+//! Fonts are written as Type0 / CIDFontType2 with Identity-H encoding, so text
+//! is a sequence of 2-byte glyph ids. A ToUnicode CMap maps them back to
+//! characters for search and copy.
+
+use std::collections::BTreeMap;
+use std::fmt::Write as _;
+
+use miniz_oxide::deflate::compress_to_vec_zlib;
+
+use crate::font::Font;
+
+/// Handle returned by [`Document::add_font`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FontId(usize);
+
+pub struct Document<'f> {
+    fonts: Vec<FontUse<'f>>,
+    pages: Vec<Page>,
+}
+
+struct FontUse<'f> {
+    font: &'f Font<'f>,
+    /// Glyphs drawn with this font and the character each one came from.
+    used: BTreeMap<u16, char>,
+}
+
+struct Page {
+    width: f32,
+    height: f32,
+    content: String,
+}
+
+impl Default for Document<'_> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<'f> Document<'f> {
+    pub fn new() -> Self {
+        Document {
+            fonts: Vec::new(),
+            pages: Vec::new(),
+        }
+    }
+
+    pub fn add_font(&mut self, font: &'f Font<'f>) -> FontId {
+        self.fonts.push(FontUse {
+            font,
+            used: BTreeMap::new(),
+        });
+        FontId(self.fonts.len() - 1)
+    }
+
+    /// Starts a new page; size in points.
+    pub fn add_page(&mut self, width: f32, height: f32) {
+        self.pages.push(Page {
+            width,
+            height,
+            content: String::new(),
+        });
+    }
+
+    /// Draws `text` on the last page with its baseline starting at (`x`, `y`),
+    /// measured in points from the top-left corner. Does nothing before the
+    /// first [`add_page`](Self::add_page).
+    pub fn text(&mut self, font: FontId, size: f32, x: f32, y: f32, text: &str) {
+        let (Some(page), Some(f)) = (self.pages.last_mut(), self.fonts.get_mut(font.0)) else {
+            return;
+        };
+        let _ = write!(
+            page.content,
+            "BT /F{} {} Tf {} {} Td <",
+            font.0,
+            num(size),
+            num(x),
+            num(page.height - y)
+        );
+        for c in text.chars() {
+            let gid = f.font.glyph(c);
+            if gid != 0 {
+                f.used.entry(gid).or_insert(c);
+            }
+            let _ = write!(page.content, "{gid:04X}");
+        }
+        page.content.push_str("> Tj ET\n");
+    }
+
+    pub fn finish(self) -> Vec<u8> {
+        let mut w = Writer::default();
+        w.out.extend_from_slice(b"%PDF-1.7\n%\xE2\xE3\xCF\xD3\n");
+
+        // Fixed object numbers: 1 catalog, 2 page tree, 3 shared resources,
+        // then 5 per font, then 2 per page.
+        let font_base = 4;
+        let page_base = font_base + 5 * self.fonts.len();
+        let page_id = |i: usize| page_base + 2 * i;
+
+        w.obj(1, "<< /Type /Catalog /Pages 2 0 R >>");
+
+        let kids: String = (0..self.pages.len())
+            .map(|i| format!("{} 0 R ", page_id(i)))
+            .collect();
+        w.obj(
+            2,
+            &format!(
+                "<< /Type /Pages /Kids [{kids}] /Count {} >>",
+                self.pages.len()
+            ),
+        );
+
+        let fonts: String = (0..self.fonts.len())
+            .map(|i| format!("/F{i} {} 0 R ", font_base + 5 * i))
+            .collect();
+        w.obj(3, &format!("<< /Font << {fonts}>> >>"));
+
+        for (i, f) in self.fonts.iter().enumerate() {
+            write_font(&mut w, font_base + 5 * i, i, f);
+        }
+
+        for (i, page) in self.pages.iter().enumerate() {
+            let id = page_id(i);
+            w.obj(
+                id,
+                &format!(
+                    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 {} {}] /Resources 3 0 R /Contents {} 0 R >>",
+                    num(page.width),
+                    num(page.height),
+                    id + 1
+                ),
+            );
+            w.stream(id + 1, "", page.content.as_bytes());
+        }
+
+        w.finish()
+    }
+}
+
+/// Writes the five objects of one font starting at object `id`.
+fn write_font(w: &mut Writer, id: usize, index: usize, f: &FontUse) {
+    let font = f.font;
+    let face = &font.face;
+    let name = font
+        .postscript_name()
+        .unwrap_or_else(|| format!("Font{index}"));
+    let [cid, descriptor, file, cmap] = [id + 1, id + 2, id + 3, id + 4];
+
+    w.obj(
+        id,
+        &format!(
+            "<< /Type /Font /Subtype /Type0 /BaseFont /{name} /Encoding /Identity-H \
+             /DescendantFonts [{cid} 0 R] /ToUnicode {cmap} 0 R >>"
+        ),
+    );
+    w.obj(
+        cid,
+        &format!(
+            "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /{name} \
+             /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> \
+             /FontDescriptor {descriptor} 0 R /CIDToGIDMap /Identity /W {} >>",
+            widths(f)
+        ),
+    );
+
+    let s = |v: i16| num(font.scale(v.into()));
+    let bbox = face.global_bounding_box();
+    let ascent = face.ascender();
+    w.obj(
+        descriptor,
+        &format!(
+            "<< /Type /FontDescriptor /FontName /{name} /Flags 4 /FontBBox [{} {} {} {}] \
+             /ItalicAngle {} /Ascent {} /Descent {} /CapHeight {} /StemV 80 /FontFile2 {file} 0 R >>",
+            s(bbox.x_min),
+            s(bbox.y_min),
+            s(bbox.x_max),
+            s(bbox.y_max),
+            num(face.italic_angle()),
+            s(ascent),
+            s(face.descender()),
+            s(face.capital_height().unwrap_or(ascent)),
+        ),
+    );
+    // ponytail: embeds the whole font file, subsetting is phase 6
+    w.stream(file, &format!("/Length1 {}", font.data.len()), font.data);
+    w.stream(cmap, "", to_unicode(&f.used).as_bytes());
+}
+
+/// `/W` array for the used glyphs, consecutive ids grouped: `[3 [500 600] 10 [250]]`.
+fn widths(f: &FontUse) -> String {
+    let mut out = String::from("[");
+    let mut prev: Option<u16> = None;
+    for &gid in f.used.keys() {
+        if prev.and_then(|p| p.checked_add(1)) == Some(gid) {
+            out.push(' ');
+        } else {
+            if prev.is_some() {
+                out.push_str("] ");
+            }
+            let _ = write!(out, "{gid} [");
+        }
+        out.push_str(&num(f.font.advance(gid)));
+        prev = Some(gid);
+    }
+    if prev.is_some() {
+        out.push(']');
+    }
+    out.push(']');
+    out
+}
+
+fn to_unicode(used: &BTreeMap<u16, char>) -> String {
+    let mut out = String::from(
+        "/CIDInit /ProcSet findresource begin\n12 dict begin\nbegincmap\n\
+         /CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def\n\
+         /CMapName /Adobe-Identity-UCS def\n/CMapType 2 def\n\
+         1 begincodespacerange\n<0000> <FFFF>\nendcodespacerange\n",
+    );
+    let entries: Vec<_> = used.iter().collect();
+    // The CMap format caps a bfchar block at 100 entries.
+    for chunk in entries.chunks(100) {
+        let _ = writeln!(out, "{} beginbfchar", chunk.len());
+        for (gid, c) in chunk {
+            let _ = write!(out, "<{gid:04X}> <");
+            for unit in c.encode_utf16(&mut [0; 2]) {
+                let _ = write!(out, "{unit:04X}");
+            }
+            out.push_str(">\n");
+        }
+        out.push_str("endbfchar\n");
+    }
+    out.push_str("endcmap\nCMapName currentdict /CMap defineresource pop\nend\nend\n");
+    out
+}
+
+/// PDF number: at most two decimals, no exponent.
+fn num(v: f32) -> String {
+    if !v.is_finite() {
+        return "0".into();
+    }
+    let s = format!("{v:.2}");
+    let s = s.trim_end_matches('0').trim_end_matches('.');
+    if s == "-0" { "0".into() } else { s.into() }
+}
+
+#[derive(Default)]
+struct Writer {
+    out: Vec<u8>,
+    /// Byte offset of each object; index is object number - 1.
+    offsets: Vec<usize>,
+}
+
+impl Writer {
+    fn start(&mut self, id: usize) {
+        if self.offsets.len() < id {
+            self.offsets.resize(id, 0);
+        }
+        self.offsets[id - 1] = self.out.len();
+        self.out
+            .extend_from_slice(format!("{id} 0 obj\n").as_bytes());
+    }
+
+    fn obj(&mut self, id: usize, body: &str) {
+        self.start(id);
+        self.out.extend_from_slice(body.as_bytes());
+        self.out.extend_from_slice(b"\nendobj\n");
+    }
+
+    /// Flate-compressed stream; `extra` goes into its dictionary.
+    fn stream(&mut self, id: usize, extra: &str, data: &[u8]) {
+        let data = compress_to_vec_zlib(data, 6);
+        self.start(id);
+        self.out.extend_from_slice(
+            format!(
+                "<< /Length {} /Filter /FlateDecode {extra} >>\nstream\n",
+                data.len()
+            )
+            .as_bytes(),
+        );
+        self.out.extend_from_slice(&data);
+        self.out.extend_from_slice(b"\nendstream\nendobj\n");
+    }
+
+    fn finish(mut self) -> Vec<u8> {
+        let xref = self.out.len();
+        let mut table = format!("xref\n0 {}\n0000000000 65535 f \n", self.offsets.len() + 1);
+        for off in &self.offsets {
+            let _ = writeln!(table, "{off:010} 00000 n ");
+        }
+        let _ = write!(
+            table,
+            "trailer\n<< /Size {} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n",
+            self.offsets.len() + 1
+        );
+        self.out.extend_from_slice(table.as_bytes());
+        self.out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const NOTO: &[u8] = include_bytes!("../tests/fixtures/NotoSans-Regular.ttf");
+
+    fn find(hay: &[u8], needle: &[u8]) -> Option<usize> {
+        hay.windows(needle.len()).position(|w| w == needle)
+    }
+
+    #[test]
+    fn xref_points_at_objects() {
+        let font = Font::new(NOTO).unwrap();
+        let mut doc = Document::new();
+        let f = doc.add_font(&font);
+        doc.add_page(595.0, 842.0);
+        doc.text(f, 12.0, 72.0, 72.0, "Привет, world");
+        doc.add_page(595.0, 842.0);
+        doc.text(f, 12.0, 72.0, 72.0, "second");
+        let pdf = doc.finish();
+
+        let tail = &pdf[find(&pdf, b"startxref\n").unwrap() + 10..];
+        let xref: usize = std::str::from_utf8(tail)
+            .unwrap()
+            .lines()
+            .next()
+            .unwrap()
+            .parse()
+            .unwrap();
+        let table = std::str::from_utf8(&pdf[xref..]).unwrap();
+        assert!(table.starts_with("xref\n0 13\n"));
+        for (i, line) in table.lines().skip(3).take(12).enumerate() {
+            let off: usize = line[..10].parse().unwrap();
+            assert!(
+                pdf[off..].starts_with(format!("{} 0 obj\n", i + 1).as_bytes()),
+                "object {}",
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn to_unicode_maps_glyphs() {
+        let used = BTreeMap::from([(0x12, 'Я'), (0x13, '😀')]);
+        let cmap = to_unicode(&used);
+        assert!(cmap.contains("2 beginbfchar\n<0012> <042F>\n<0013> <D83DDE00>\n"));
+    }
+
+    #[test]
+    fn widths_group_consecutive_ids() {
+        let font = Font::new(NOTO).unwrap();
+        let used = BTreeMap::from([(3, ' '), (4, '!'), (10, 'x')]);
+        let w = widths(&FontUse { font: &font, used });
+        assert!(
+            w.starts_with("[3 [") && w.contains("] 10 [") && w.ends_with("]]"),
+            "{w}"
+        );
+    }
+
+    #[test]
+    fn numbers() {
+        assert_eq!(num(12.0), "12");
+        assert_eq!(num(0.126), "0.13");
+        assert_eq!(num(-0.001), "0");
+        assert_eq!(num(f32::NAN), "0");
+        assert_eq!(num(1e20), "100000002004087734272");
+    }
+}
