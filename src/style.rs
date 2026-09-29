@@ -139,6 +139,7 @@ h4 { margin: 1.33em 0 }
 h5 { font-size: .83em; margin: 1.67em 0 }
 h6 { font-size: .67em; margin: 2.33em 0 }
 h1, h2, h3, h4, h5, h6, b, strong, th, dt { font-weight: bold }
+h1, h2, h3, h4, h5, h6 { break-after: avoid }
 i, em, cite, var, dfn, address { font-style: italic }
 u, ins, a { text-decoration: underline }
 s, strike, del { text-decoration: line-through }

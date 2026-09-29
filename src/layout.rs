@@ -2,7 +2,7 @@
 //!
 //! Coordinates are points from the top-left of the content area, y downward.
 
-use crate::css::{Color, Display, Length, LineHeight, TextAlign, WhiteSpace};
+use crate::css::{Break, Color, Display, Length, LineHeight, TextAlign, WhiteSpace};
 use crate::font::Font;
 use crate::html::{Dom, NodeData};
 use crate::style::{Size, Style};
@@ -30,10 +30,12 @@ pub enum Item {
 
 pub struct Layout {
     pub items: Vec<Item>,
-    pub height: f32,
 }
 
-pub fn layout(dom: &Dom, styles: &[Style], fonts: &[Font], width: f32) -> Layout {
+/// Lays out the document `width` wide on pages `page_height` tall; pages
+/// follow each other at multiples of `page_height`. Pass `f32::INFINITY` for
+/// one endless page.
+pub fn layout(dom: &Dom, styles: &[Style], fonts: &[Font], width: f32, page_height: f32) -> Layout {
     let faces: Vec<_> = fonts
         .iter()
         .map(|f| (f.family.as_str(), f.weight, f.italic))
@@ -44,15 +46,18 @@ pub fn layout(dom: &Dom, styles: &[Style], fonts: &[Font], width: f32) -> Layout
         fonts,
         faces,
         items: Vec::new(),
+        retrying: false,
     };
-    let mut flow = Flow::default();
+    let mut flow = Flow {
+        page_h: page_height,
+        ..Flow::default()
+    };
     cx.children(0, 0.0, width, &mut flow);
-    let height = flow.y + flow.collapsed().max(0.0);
-    Layout {
-        items: cx.items,
-        height,
-    }
+    Layout { items: cx.items }
 }
+
+/// Tolerance for float comparisons against page boundaries.
+const EPS: f32 = 0.01;
 
 /// Vertical position plus the adjoining margins not yet resolved (CSS 2.1 §8.3.1).
 #[derive(Default)]
@@ -64,9 +69,64 @@ struct Flow {
     tops: Vec<f32>,
     /// Blocks whose top edge waits for the pending margins.
     waiting: Vec<usize>,
+    page_h: f32,
+    /// Top of every line placed so far, in order.
+    line_tops: Vec<f32>,
+}
+
+/// Flow and output state to roll back to when content moves to the next page.
+struct Mark {
+    y: f32,
+    pos: f32,
+    neg: f32,
+    tops: usize,
+    waiting: Vec<usize>,
+    lines: usize,
+    items: usize,
 }
 
 impl Flow {
+    fn paged(&self) -> bool {
+        self.page_h.is_finite() && self.page_h > 0.0
+    }
+
+    fn page_top(&self, y: f32) -> f32 {
+        if !self.paged() {
+            return 0.0;
+        }
+        ((y + EPS) / self.page_h).floor() * self.page_h
+    }
+
+    fn next_page(&self, y: f32) -> f32 {
+        self.page_top(y) + self.page_h
+    }
+
+    fn at_page_top(&self, y: f32) -> bool {
+        y - self.page_top(y) < EPS
+    }
+
+    /// Whether a box of height `h` at `top` runs past the end of its page.
+    /// A box already at the top of a page never does: moving it gains nothing.
+    fn crosses(&self, top: f32, h: f32) -> bool {
+        self.paged() && !self.at_page_top(top) && top + h > self.next_page(top) + EPS
+    }
+
+    /// Forced break: continue on the next page, dropping margins before it.
+    fn force_break(&mut self) {
+        if self.paged() && !self.at_page_top(self.y) {
+            self.y = self.next_page(self.y);
+            self.pos = 0.0;
+            self.neg = 0.0;
+        }
+    }
+
+    /// Unforced break before content that was at `top`: margins are truncated.
+    fn move_to_next_page(&mut self, top: f32) {
+        self.y = self.next_page(top);
+        self.pos = 0.0;
+        self.neg = 0.0;
+    }
+
     fn margin(&mut self, m: f32) {
         if m > 0.0 {
             self.pos = self.pos.max(m);
@@ -116,6 +176,9 @@ struct Ctx<'a> {
     fonts: &'a [Font<'a>],
     faces: Vec<(&'a str, u16, bool)>,
     items: Vec<Item>,
+    /// Inside a re-layout that moved content to the next page. Nested moves
+    /// are skipped so that nested `avoid` boxes cannot cost exponential time.
+    retrying: bool,
 }
 
 /// Inline content after white-space processing: a text run or a forced break.
@@ -158,6 +221,28 @@ impl<'a> Ctx<'a> {
         &styles[id]
     }
 
+    fn mark(&self, flow: &Flow) -> Mark {
+        Mark {
+            y: flow.y,
+            pos: flow.pos,
+            neg: flow.neg,
+            tops: flow.tops.len(),
+            waiting: flow.waiting.clone(),
+            lines: flow.line_tops.len(),
+            items: self.items.len(),
+        }
+    }
+
+    fn restore(&mut self, flow: &mut Flow, m: &Mark) {
+        flow.y = m.y;
+        flow.pos = m.pos;
+        flow.neg = m.neg;
+        flow.tops.truncate(m.tops);
+        flow.waiting.clone_from(&m.waiting);
+        flow.line_tops.truncate(m.lines);
+        self.items.truncate(m.items);
+    }
+
     fn font_for(&self, s: &Style) -> usize {
         pick(&self.faces, &s.font_family, s.font_weight, s.italic)
     }
@@ -188,13 +273,36 @@ impl<'a> Ctx<'a> {
             return;
         };
         let mut run = Vec::new();
+        // The previous block sibling when it has `break-after: avoid`, with the state before it.
+        let mut keep: Option<(Mark, usize)> = None;
         for &c in &node.children {
             if self.is_block(c) {
                 if !run.is_empty() {
-                    self.inline(id, &run, x, w, flow);
+                    if self.inline(id, &run, x, w, flow) {
+                        keep = None;
+                    }
                     run.clear();
                 }
+                let mut mark = self.mark(flow);
+                let (lines, prev_end) = (flow.line_tops.len(), flow.y);
                 self.block(c, x, w, flow);
+                if let Some((m, prev)) = keep.take()
+                    && !self.retrying
+                    && self.style(c).break_before != Break::Page
+                    && !flow.at_page_top(m.y)
+                    && let Some(&first) = flow.line_tops.get(lines)
+                    && flow.page_top(first) > flow.page_top(prev_end - EPS)
+                {
+                    // A page break fell between `prev` and `c`: move `prev` along.
+                    self.restore(flow, &m);
+                    flow.move_to_next_page(m.y);
+                    self.retrying = true;
+                    self.block(prev, x, w, flow);
+                    mark = self.mark(flow);
+                    self.block(c, x, w, flow);
+                    self.retrying = false;
+                }
+                keep = (self.style(c).break_after == Break::Avoid).then_some((mark, c));
             } else if self.style(c).display != Display::None {
                 run.push(c);
             }
@@ -204,8 +312,36 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    // ponytail: tables and list items lay out as plain blocks until phase 5
+    /// A block with its forced breaks and `break-inside: avoid`.
     fn block(&mut self, id: usize, x: f32, cw: f32, flow: &mut Flow) {
+        let s = self.style(id);
+        if s.break_before == Break::Page {
+            flow.force_break();
+        }
+        if s.break_inside == Break::Avoid && flow.paged() && !self.retrying {
+            let m = self.mark(flow);
+            let (top, bottom) = self.block_box(id, x, cw, flow);
+            if bottom - top <= flow.page_h
+                && flow.page_top(top) != flow.page_top(bottom - EPS)
+                && !flow.at_page_top(top)
+            {
+                self.restore(flow, &m);
+                flow.move_to_next_page(top);
+                self.retrying = true;
+                self.block_box(id, x, cw, flow);
+                self.retrying = false;
+            }
+        } else {
+            self.block_box(id, x, cw, flow);
+        }
+        if s.break_after == Break::Page {
+            flow.force_break();
+        }
+    }
+
+    // ponytail: tables and list items lay out as plain blocks until phase 5
+    /// Lays out the block box; returns its border-box top and bottom.
+    fn block_box(&mut self, id: usize, x: f32, cw: f32, flow: &mut Flow) -> (f32, f32) {
         let s = self.style(id);
         let pct = |v: Size| match v {
             Size::Pt(p) => p,
@@ -298,6 +434,7 @@ impl<'a> Ctx<'a> {
             *slot = rect;
         }
         flow.margin(mb);
+        (top, bottom)
     }
 
     fn collect(&self, id: usize, bg: Option<Color>, prev_space: &mut bool, out: &mut Vec<Piece>) {
@@ -370,8 +507,8 @@ impl<'a> Ctx<'a> {
         }
     }
 
-    /// Lays out a run of inline-level siblings as line boxes.
-    fn inline(&mut self, container: usize, run: &[usize], x: f32, w: f32, flow: &mut Flow) {
+    /// Lays out a run of inline-level siblings as line boxes; false if there were none.
+    fn inline(&mut self, container: usize, run: &[usize], x: f32, w: f32, flow: &mut Flow) -> bool {
         let cs = self.style(container);
         let mut pieces = Vec::new();
         let mut prev_space = true;
@@ -386,22 +523,45 @@ impl<'a> Ctx<'a> {
         };
         let lines = self.break_lines(&pieces, atoms, w, indent);
         if lines.is_empty() {
-            return;
+            return false;
         }
 
-        flow.resolve();
         let strut = self.metrics(self.font_for(cs), cs.font_size, cs.line_height);
+        let heights: Vec<(f32, f32)> = lines
+            .iter()
+            .map(|line| {
+                line.atoms
+                    .iter()
+                    .filter_map(|a| pieces.get(a.piece))
+                    .fold(strut, |(ab, be), p| {
+                        let s = self.style(p.node);
+                        let (a, b) = self.metrics(p.font, s.font_size, s.line_height);
+                        (ab.max(a), be.max(b))
+                    })
+            })
+            .collect();
+        let start = flow.y + flow.collapsed();
+        let tops = place_lines(
+            flow,
+            start,
+            &heights,
+            cs.orphans as usize,
+            cs.widows as usize,
+        );
+        // Pushing the first line to the next page moves the enclosing boxes' tops with it.
+        if let Some(&first) = tops.first()
+            && first != start
+        {
+            flow.move_to_next_page(start);
+        }
+        flow.resolve();
+
         for (i, line) in lines.iter().enumerate() {
-            let (mut above, mut below) = strut;
-            for a in &line.atoms {
-                if let Some(p) = pieces.get(a.piece) {
-                    let s = self.style(p.node);
-                    let (ab, be) = self.metrics(p.font, s.font_size, s.line_height);
-                    above = above.max(ab);
-                    below = below.max(be);
-                }
-            }
-            let baseline = flow.y + above;
+            let (Some(&top), Some(&(above, below))) = (tops.get(i), heights.get(i)) else {
+                continue;
+            };
+            flow.line_tops.push(top);
+            let baseline = top + above;
             let avail = if i == 0 { w - indent } else { w };
             let free = (avail - line.width).max(0.0);
             let spaces: usize = line
@@ -436,6 +596,7 @@ impl<'a> Ctx<'a> {
             }
             flow.y = baseline + below;
         }
+        true
     }
 
     fn emit_run(
@@ -661,6 +822,43 @@ impl<'a> Ctx<'a> {
     }
 }
 
+/// Tops of lines with `heights` (above, below the baseline) starting at
+/// `start`, breaking pages between lines with orphans and widows honored
+/// when that is possible (CSS Fragmentation §4.4).
+fn place_lines(
+    flow: &Flow,
+    start: f32,
+    heights: &[(f32, f32)],
+    orphans: usize,
+    widows: usize,
+) -> Vec<f32> {
+    let n = heights.len();
+    let h = |i: usize| heights.get(i).map_or(0.0, |(a, b)| a + b);
+    let mut tops = vec![start; n];
+    // First line of the paragraph on the current page.
+    let mut seg = 0;
+    let mut y = start;
+    let mut i = 0;
+    while i < n {
+        if flow.crosses(y, h(i)) {
+            let mut b = i.min(n.saturating_sub(widows)).max(seg);
+            if b < seg + orphans {
+                b = seg;
+            }
+            if b == seg && flow.at_page_top(tops[seg]) {
+                b = i;
+            }
+            y = flow.next_page(if b == i { y } else { tops[b] });
+            i = b;
+            seg = b;
+        }
+        tops[i] = y;
+        y += h(i);
+        i += 1;
+    }
+    tops
+}
+
 /// Best face for a family list: first family present (else the first
 /// font's family), then matching style, then closest weight.
 fn pick(faces: &[(&str, u16, bool)], families: &[String], weight: u16, italic: bool) -> usize {
@@ -686,10 +884,120 @@ mod tests {
     const NOTO: &[u8] = include_bytes!("../tests/fixtures/NotoSans-Regular.ttf");
 
     fn lay(src: &str, width: f32) -> Layout {
+        paged(src, width, f32::INFINITY)
+    }
+
+    fn paged(src: &str, width: f32, page_h: f32) -> Layout {
         let fonts = [Font::new(NOTO).unwrap()];
         let dom = html::parse(src);
         let styled = style::cascade(&dom);
-        layout(&dom, &styled.styles, &fonts, width)
+        layout(&dom, &styled.styles, &fonts, width, page_h)
+    }
+
+    /// Line tops (baseline minus the 12pt line's ascent share) grouped by page.
+    fn pages(l: &Layout, page_h: f32) -> Vec<Vec<String>> {
+        let mut out: Vec<Vec<String>> = Vec::new();
+        for (_, y, text) in texts(l) {
+            let p = (y / page_h) as usize;
+            out.resize_with(out.len().max(p + 1), Vec::new);
+            out[p].push(text.trim().to_string());
+        }
+        out
+    }
+
+    fn para(n: usize) -> String {
+        (1..=n)
+            .map(|i| format!("l{i}"))
+            .collect::<Vec<_>>()
+            .join("<br>")
+    }
+
+    #[test]
+    fn lines_flow_onto_pages() {
+        // 12pt lines, 50pt pages: four lines fit on a page.
+        let l = paged(
+            &format!("{BODY}<p style='orphans: 1; widows: 1'>{}</p>", para(9)),
+            100.0,
+            50.0,
+        );
+        assert_eq!(
+            pages(&l, 50.0),
+            [
+                vec!["l1", "l2", "l3", "l4"],
+                vec!["l5", "l6", "l7", "l8"],
+                vec!["l9"]
+            ]
+        );
+        // The first line on a new page starts right at its top.
+        let t = texts(&l);
+        assert!(t[4].1 > 50.0 && t[4].1 < 62.0);
+    }
+
+    #[test]
+    fn widows_and_orphans() {
+        let l = paged(&format!("{BODY}<p>{}</p>", para(5)), 100.0, 50.0);
+        assert_eq!(pages(&l, 50.0), [vec!["l1", "l2", "l3"], vec!["l4", "l5"]]);
+        // Only one line would stay on the first page: the paragraph moves whole.
+        let l = paged(
+            &format!("{BODY}<div style='height: 30pt'></div><p>{}</p>", para(3)),
+            100.0,
+            50.0,
+        );
+        assert_eq!(pages(&l, 50.0), [vec![], vec!["l1", "l2", "l3"]]);
+    }
+
+    #[test]
+    fn forced_breaks() {
+        let l = paged(
+            &format!(
+                "{BODY}<p style='break-before: page'>a</p><p style='page-break-after: always'>b</p><p>c</p>"
+            ),
+            100.0,
+            50.0,
+        );
+        // No blank first page for a break before the very first content.
+        assert_eq!(pages(&l, 50.0), [vec!["a", "b"], vec!["c"]]);
+    }
+
+    #[test]
+    fn avoid_inside_and_keep_heading() {
+        let src = format!(
+            "{BODY}<p>a</p><p>b</p><div style='break-inside: avoid'>{}</div>",
+            para(3)
+        );
+        let l = paged(&src, 100.0, 50.0);
+        assert_eq!(pages(&l, 50.0), [vec!["a", "b"], vec!["l1", "l2", "l3"]]);
+        // H would be the last line of page 1 with its paragraph on page 2.
+        let src = format!(
+            "{BODY}<p>a</p><p>b</p><p>c</p><h4 style='margin: 0; line-height: 12pt'>H</h4><p>{}</p>",
+            para(3)
+        );
+        let l = paged(&src, 100.0, 50.0);
+        assert_eq!(
+            pages(&l, 50.0),
+            [vec!["a", "b", "c"], vec!["H", "l1", "l2", "l3"]]
+        );
+        let src = src.replace("margin: 0;", "margin: 0; break-after: auto;");
+        let l = paged(&src, 100.0, 50.0);
+        assert_eq!(
+            pages(&l, 50.0),
+            [vec!["a", "b", "c", "H"], vec!["l1", "l2", "l3"]]
+        );
+    }
+
+    #[test]
+    fn oversized_content_still_progresses() {
+        let l = paged(
+            &format!("{BODY}<p style='font-size: 100pt; line-height: 120pt'>a b c</p>"),
+            50.0,
+            50.0,
+        );
+        assert_eq!(texts(&l).len(), 3);
+        paged(
+            &format!("{BODY}<div style='break-inside: avoid; height: 500pt'>x</div>"),
+            50.0,
+            50.0,
+        );
     }
 
     fn texts(l: &Layout) -> Vec<(f32, f32, &str)> {
@@ -742,7 +1050,6 @@ mod tests {
                 assert!((y - t[i - 1].1 - 12.0).abs() < 0.01);
             }
         }
-        assert!((l.height - 12.0 * t.len() as f32).abs() < 0.01);
     }
 
     #[test]
@@ -866,7 +1173,6 @@ mod tests {
             100.0,
         );
         assert!(l.items.is_empty());
-        assert_eq!(l.height, 0.0);
         lay("<p>x</p>", 0.0);
         lay("<p>x</p>", -10.0);
     }

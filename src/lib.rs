@@ -22,6 +22,9 @@ pub use font::Font;
 use css::Length;
 use layout::Item;
 
+/// Guards against runaway output from absurd lengths in the input.
+const MAX_PAGES: usize = 100_000;
+
 pub struct Options<'a> {
     /// Fonts to lay out with. CSS `font-family` picks among them by family
     /// name; families not found here, including generic ones like
@@ -61,36 +64,89 @@ pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
             Some(Length::Auto) | None => opts.margin[i],
         }
     });
-    let lay = layout::layout(&dom, &styled.styles, &opts.fonts, (pw - ml - mr).max(0.0));
+    let page_h = (ph - mt - mb).max(1.0);
+    let lay = layout::layout(
+        &dom,
+        &styled.styles,
+        &opts.fonts,
+        (pw - ml - mr).max(0.0),
+        page_h,
+    );
+
+    // Items sorted onto pages; a rect crossing page boundaries is cut into pieces.
+    let page = |y: f32| (y / page_h).floor().max(0.0) as usize;
+    let mut pages: Vec<Vec<Item>> = Vec::new();
+    let mut put = |p: usize, item: Item| -> Result<()> {
+        if p >= MAX_PAGES {
+            return Err(Error::TooManyPages);
+        }
+        if pages.len() <= p {
+            pages.resize_with(p + 1, Vec::new);
+        }
+        if let Some(list) = pages.get_mut(p) {
+            list.push(item);
+        }
+        Ok(())
+    };
+    for item in lay.items {
+        match item {
+            Item::Rect { x, y, w, h, color } if color.a > 0 && h > 0.0 && w > 0.0 => {
+                for p in page(y)..=page(y + h - 0.01) {
+                    let top = p as f32 * page_h;
+                    let (y0, y1) = (y.max(top), (y + h).min(top + page_h));
+                    put(
+                        p,
+                        Item::Rect {
+                            x,
+                            y: y0 - top,
+                            w,
+                            h: y1 - y0,
+                            color,
+                        },
+                    )?;
+                }
+            }
+            Item::Text { y, color, .. } if color.a > 0 => {
+                let p = page(y);
+                let mut item = item;
+                if let Item::Text { y: iy, .. } = &mut item {
+                    *iy = y - p as f32 * page_h;
+                }
+                put(p, item)?;
+            }
+            _ => {}
+        }
+    }
+    if pages.is_empty() {
+        pages.push(Vec::new());
+    }
 
     let mut doc = pdf::Document::new(&opts.fonts);
-    // ponytail: one page as tall as the content; pagination is phase 4
-    doc.add_page(pw, (lay.height + mt + mb).max(ph));
-    for item in &lay.items {
-        match item {
-            Item::Rect { x, y, w, h, color } if color.a > 0 => {
-                doc.rect(x + ml, y + mt, *w, *h, *color)
-            }
-            Item::Text {
-                x,
-                y,
-                font,
-                size,
-                color,
-                word_spacing,
-                text,
-            } if color.a > 0 => doc.text(
-                x + ml,
-                y + mt,
-                &pdf::Text {
-                    font: *font,
-                    size: *size,
-                    color: *color,
-                    word_spacing: *word_spacing,
+    for items in &pages {
+        doc.add_page(pw, ph);
+        for item in items {
+            match item {
+                Item::Rect { x, y, w, h, color } => doc.rect(x + ml, y + mt, *w, *h, *color),
+                Item::Text {
+                    x,
+                    y,
+                    font,
+                    size,
+                    color,
+                    word_spacing,
                     text,
-                },
-            ),
-            _ => {}
+                } => doc.text(
+                    x + ml,
+                    y + mt,
+                    &pdf::Text {
+                        font: *font,
+                        size: *size,
+                        color: *color,
+                        word_spacing: *word_spacing,
+                        text,
+                    },
+                ),
+            }
         }
     }
     Ok(doc.finish())
