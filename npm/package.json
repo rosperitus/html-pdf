@@ -1,0 +1,44 @@
+{
+  "name": "@rosperitus/html-pdf",
+  "version": "0.1.2",
+  "description": "HTML and CSS to paginated PDF in WebAssembly. No browser, no native dependencies.",
+  "keywords": [
+    "pdf",
+    "html",
+    "html-to-pdf",
+    "css",
+    "pagination",
+    "wasm",
+    "webassembly"
+  ],
+  "author": "Yuri Rubtsov <rosperitus@gmail.com>",
+  "license": "MIT",
+  "exports": {
+    ".": {
+      "node": {
+        "types": "./node/html_pdf.d.ts",
+        "default": "./node/html_pdf.js"
+      },
+      "default": {
+        "types": "./web/html_pdf.d.ts",
+        "default": "./web/html_pdf.js"
+      }
+    }
+  },
+  "main": "./node/html_pdf.js",
+  "types": "./node/html_pdf.d.ts",
+  "files": [
+    "node/",
+    "web/"
+  ],
+  "scripts": {
+    "build": "sh build.sh",
+    "test": "node test.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

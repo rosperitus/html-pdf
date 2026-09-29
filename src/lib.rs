@@ -19,6 +19,11 @@ mod style;
 mod subset;
 
 pub use error::{Error, Result};
+
+/// Compiles the Rust examples in README.md as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+pub struct ReadmeDoctests;
 pub use font::Font;
 
 use css::Length;

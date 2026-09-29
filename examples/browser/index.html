@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>@rosperitus/html-pdf in the browser</title>
+<style>
+  body { margin: 0; font: 14px system-ui, sans-serif; display: grid; grid-template-columns: 1fr 1fr; height: 100vh }
+  textarea { font: 13px ui-monospace, monospace; padding: 12px; border: 0; border-right: 1px solid #ccc; resize: none }
+  aside { display: flex; flex-direction: column }
+  header { padding: 8px 12px; border-bottom: 1px solid #ccc; display: flex; gap: 12px; align-items: center }
+  iframe { flex: 1; border: 0; width: 100% }
+</style>
+</head>
+<body>
+<textarea id="html">&lt;style&gt;
+  @page { size: A5; margin: 15mm;
+    @bottom-center { content: "Page " counter(page) " of " counter(pages); font-size: 8pt } }
+  h1 { color: #1a4d8f }
+  table { width: 100%; border-collapse: collapse }
+  td, th { border: 1px solid #999; padding: 3pt 6pt }
+&lt;/style&gt;
+&lt;h1&gt;Hello from the browser&lt;/h1&gt;
+&lt;p&gt;Edit the HTML on the left; the PDF on the right updates as you type.&lt;/p&gt;
+&lt;table&gt;
+  &lt;thead&gt;&lt;tr&gt;&lt;th&gt;Item&lt;/th&gt;&lt;th&gt;Price&lt;/th&gt;&lt;/tr&gt;&lt;/thead&gt;
+  &lt;tr&gt;&lt;td&gt;Coffee&lt;/td&gt;&lt;td&gt;3.50&lt;/td&gt;&lt;/tr&gt;
+  &lt;tr&gt;&lt;td&gt;Croissant&lt;/td&gt;&lt;td&gt;2.20&lt;/td&gt;&lt;/tr&gt;
+&lt;/table&gt;
+</textarea>
+<aside>
+  <header><b>@rosperitus/html-pdf</b><span id="status">loading…</span></header>
+  <iframe id="pdf" title="PDF preview"></iframe>
+</aside>
+<script type="module">
+  // Served from the repository root: `python3 -m http.server`, then open /examples/browser/.
+  import init, { render } from '../../npm/web/html_pdf.js';
+
+  await init();
+  const font = await (await fetch('../../tests/fixtures/NotoSans-Regular.ttf')).arrayBuffer();
+
+  const html = document.getElementById('html');
+  const status = document.getElementById('status');
+  const frame = document.getElementById('pdf');
+  let url;
+
+  function update() {
+    try {
+      const started = performance.now();
+      const pdf = render(html.value, { fonts: [font] });
+      const ms = (performance.now() - started).toFixed(1);
+      URL.revokeObjectURL(url);
+      url = URL.createObjectURL(new Blob([pdf], { type: 'application/pdf' }));
+      frame.src = url;
+      status.textContent = `${pdf.length} bytes in ${ms} ms`;
+    } catch (e) {
+      status.textContent = e.message;
+    }
+  }
+
+  html.addEventListener('input', update);
+  update();
+</script>
+</body>
+</html>

@@ -12,3 +12,10 @@ CLAUDE.local.md
 # already existing elements were commented out
 
 #/target
+
+# npm package build output
+/npm/node/
+/npm/web/
+/npm/README.md
+/npm/LICENSE
+/npm/node_modules/
