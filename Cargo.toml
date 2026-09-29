@@ -4,6 +4,7 @@ version = "0.1.2"
 edition = "2024"
 authors = ["Yuri Rubtsov <rosperitus@gmail.com>"]
 license = "MIT"
+repository = "https://github.com/rosperitus/html-pdf"
 description = "HTML and CSS to paginated PDF, with no browser"
 
 [dependencies]

@@ -13,6 +13,13 @@
   ],
   "author": "Yuri Rubtsov <rosperitus@gmail.com>",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/rosperitus/html-pdf.git",
+    "directory": "npm"
+  },
+  "homepage": "https://github.com/rosperitus/html-pdf#readme",
+  "bugs": "https://github.com/rosperitus/html-pdf/issues",
   "exports": {
     ".": {
       "node": {
