@@ -58,6 +58,18 @@ impl<'a> Options<'a> {
     }
 }
 
+/// Text of a page-margin box on page `page` of `pages`.
+fn margin_text(content: &[css::Content], page: usize, pages: usize) -> String {
+    content
+        .iter()
+        .map(|c| match c {
+            css::Content::Text(t) => t.clone(),
+            css::Content::Page => page.to_string(),
+            css::Content::Pages => pages.to_string(),
+        })
+        .collect()
+}
+
 pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
     if opts.fonts.is_empty() {
         return Err(Error::Font("no fonts given".into()));
@@ -132,8 +144,57 @@ pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
     for img in lay.images {
         doc.add_image(img);
     }
-    for items in &pages {
+    let faces: Vec<_> = opts
+        .fonts
+        .iter()
+        .map(|f| (f.family.as_str(), f.weight, f.italic))
+        .collect();
+    let root = styled
+        .styles
+        .get(html::HTML)
+        .cloned()
+        .unwrap_or_else(style::Style::initial);
+    let boxes: Vec<_> = styled
+        .page
+        .boxes
+        .iter()
+        .map(|b| {
+            let s = style::margin_box(&root, &b.decls);
+            let font = layout::pick(&faces, &s.font_family, s.font_weight, s.italic);
+            (b, s, font)
+        })
+        .collect();
+    let count = pages.len();
+    for (index, items) in pages.iter().enumerate() {
         doc.add_page(pw, ph);
+        for (b, s, font) in &boxes {
+            let text = margin_text(&b.content, index + 1, count);
+            let Some(f) = opts
+                .fonts
+                .get(*font)
+                .filter(|_| !text.is_empty() && s.color.a > 0)
+            else {
+                continue;
+            };
+            let w = f.measure(&text, s.font_size);
+            let x = match b.at % 3 {
+                0 => ml,
+                1 => (pw - w) / 2.0,
+                _ => pw - mr - w,
+            };
+            // Centered vertically in the top or bottom margin.
+            let (asc, desc, _) = f.vmetrics();
+            let center = if b.at < 3 { mt / 2.0 } else { ph - mb / 2.0 };
+            let baseline = center + (asc - desc) * s.font_size / 2000.0;
+            let run = pdf::Text {
+                font: *font,
+                size: s.font_size,
+                color: s.color,
+                word_spacing: 0.0,
+                text: &text,
+            };
+            doc.text(x, baseline, &run);
+        }
         for item in items {
             match item {
                 Item::Rect { x, y, w, h, color } => doc.rect(*x, *y, *w, *h, *color),
@@ -161,4 +222,35 @@ pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
         }
     }
     Ok(doc.finish())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn margin_box_text() {
+        let mut sheet = css::Sheet::default();
+        css::parse_sheet(
+            r#"@page { margin: 2cm; @bottom-right { content: "Стр. " counter(page) " из " counter(pages); font-size: 8pt }
+               @top-left { content: 'Отчёт \2116 5' } @top-left { content: "Итог" } @left-middle { content: "x" } }"#,
+            &mut sheet,
+        );
+        let boxes = &sheet.page.boxes;
+        assert_eq!(boxes.len(), 2);
+        assert_eq!(boxes[0].at, 5);
+        assert_eq!(margin_text(&boxes[0].content, 2, 7), "Стр. 2 из 7");
+        assert_eq!(boxes[0].decls.len(), 1);
+        assert_eq!(margin_text(&boxes[1].content, 1, 1), "Итог");
+        assert_eq!(sheet.page.margin[0], Some(Length::Pt(72.0 * 2.0 / 2.54)));
+        let mut escaped = css::Sheet::default();
+        css::parse_sheet(
+            r#"@page { @top-left { content: 'Отчёт \2116 5 \"x\"' } }"#,
+            &mut escaped,
+        );
+        assert_eq!(
+            margin_text(&escaped.page.boxes[0].content, 1, 1),
+            "Отчёт №5 \"x\""
+        );
+    }
 }

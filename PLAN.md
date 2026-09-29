@@ -29,9 +29,13 @@
 5. Таблицы (повтор `thead` на каждой странице), списки, `img` (JPEG как есть, PNG через deflate).
 6. Сабсеттинг шрифтов, бенчмарки (`cargo run --release --example bench -- font.ttf`).
 
+## После v1
+
+- Готово: колонтитулы и номера страниц, `@page { @top-left … @bottom-right { content: … counter(page) counter(pages) } }`.
+
 ## Кандидаты на v2
 
-- Колонтитулы и номера страниц: `@page { @bottom-center { content: counter(page) } }`.
+- Колонтитулы: `@page :first`/`:left`/`:right`, боковые поля (`@left-middle`), многострочное `content`.
 - Атрибуты оформления таблиц: `border`, `cellpadding`, `width`, `bgcolor`, `align`.
 - Запасной шрифт для символов, которых нет в выбранном.
 - `:first-child` и другие псевдоклассы, `[attr]`.

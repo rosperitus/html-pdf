@@ -245,19 +245,33 @@ fn compute(
     }
     matched.sort_by_key(|(key, _)| *key);
 
+    let decls: Vec<&Decl> = matched.into_iter().map(|(_, d)| d).collect();
+    computed(parent, &decls, rem)
+}
+
+/// Style of a page-margin box: it inherits from the root element.
+pub fn margin_box(root: &Style, decls: &[(Decl, bool)]) -> Style {
+    let mut ordered: Vec<&(Decl, bool)> = decls.iter().collect();
+    ordered.sort_by_key(|(_, important)| *important);
+    let decls: Vec<&Decl> = ordered.into_iter().map(|(d, _)| d).collect();
+    computed(root, &decls, root.font_size)
+}
+
+/// Applies cascaded declarations, in increasing precedence, on top of `parent`.
+fn computed(parent: &Style, decls: &[&Decl], rem: f32) -> Style {
     let mut s = Style::inherit(parent);
     // Font size first: em units in every other property depend on it.
-    for (_, decl) in &matched {
+    for decl in decls {
         match decl {
             Decl::FontSize(l) => s.font_size = abs(*l, parent.font_size, rem),
             Decl::Inherit("font-size") => s.font_size = parent.font_size,
             _ => {}
         }
     }
-    for (_, decl) in &matched {
+    for decl in decls {
         apply(&mut s, parent, decl, rem);
     }
-    for (width, drawn) in s.border_width.iter_mut().zip(border_drawn(&matched)) {
+    for (width, drawn) in s.border_width.iter_mut().zip(border_drawn(decls)) {
         if !drawn {
             *width = 0.0;
         }
@@ -266,9 +280,9 @@ fn compute(
 }
 
 /// Final border-style per side.
-fn border_drawn(matched: &[((u8, u32, usize), &Decl)]) -> [bool; 4] {
+fn border_drawn(decls: &[&Decl]) -> [bool; 4] {
     let mut drawn = [false; 4];
-    for (_, decl) in matched {
+    for decl in decls {
         if let Decl::BorderStyle(side, d) = decl
             && let Some(slot) = drawn.get_mut(*side)
         {

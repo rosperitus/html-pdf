@@ -1165,7 +1165,7 @@ fn place_lines(
 
 /// Best face for a family list: first family present (else the first
 /// font's family), then matching style, then closest weight.
-fn pick(faces: &[(&str, u16, bool)], families: &[String], weight: u16, italic: bool) -> usize {
+pub fn pick(faces: &[(&str, u16, bool)], families: &[String], weight: u16, italic: bool) -> usize {
     let default = faces.first().map_or("", |f| f.0);
     let family = families
         .iter()

@@ -24,6 +24,36 @@ pub struct PageRule {
     /// Width and height in points.
     pub size: Option<(f32, f32)>,
     pub margin: [Option<Length>; 4],
+    /// Headers and footers from `@top-left` .. `@bottom-right`.
+    pub boxes: Vec<MarginBox>,
+}
+
+/// Positions of the supported page-margin boxes (CSS Paged Media §4.2).
+pub const MARGIN_BOXES: [&str; 6] = [
+    "top-left",
+    "top-center",
+    "top-right",
+    "bottom-left",
+    "bottom-center",
+    "bottom-right",
+];
+
+#[derive(Debug, PartialEq)]
+pub struct MarginBox {
+    /// Index into [`MARGIN_BOXES`].
+    pub at: usize,
+    pub content: Vec<Content>,
+    pub decls: Vec<(Decl, bool)>,
+}
+
+/// A piece of a `content` value.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Content {
+    Text(String),
+    /// `counter(page)`
+    Page,
+    /// `counter(pages)`
+    Pages,
 }
 
 pub struct Selector {
@@ -331,13 +361,34 @@ fn media_matches(query: &str) -> bool {
 }
 
 fn parse_page(body: &str, page: &mut PageRule) {
-    // Drop nested margin-box rules like `@top-center { ... }`.
+    // Pull out nested margin-box rules like `@top-center { ... }`.
     let mut flat = String::new();
     let mut rest = body;
     while let Some(at) = rest.find('@') {
         flat.push_str(&rest[..at]);
         let open = rest[at..].find('{').map_or(rest.len(), |o| at + o);
-        rest = rest.get(block_end(rest, open) + 1..).unwrap_or("");
+        let close = block_end(rest, open);
+        let name = rest[at + 1..open].trim().to_ascii_lowercase();
+        if let (Some(pos), Some(inner)) = (
+            MARGIN_BOXES.iter().position(|b| *b == name),
+            rest.get(open + 1..close),
+        ) {
+            let mut decls = Vec::new();
+            parse_decls(inner, &mut decls);
+            let content = split_top(inner, |c| c == ';')
+                .into_iter()
+                .filter_map(|d| d.split_once(':'))
+                .rfind(|(n, _)| n.trim().eq_ignore_ascii_case("content"))
+                .map(|(_, v)| content(v))
+                .unwrap_or_default();
+            page.boxes.retain(|b| b.at != pos);
+            page.boxes.push(MarginBox {
+                at: pos,
+                content,
+                decls,
+            });
+        }
+        rest = rest.get(close + 1..).unwrap_or("");
     }
     flat.push_str(rest);
 
@@ -361,6 +412,66 @@ fn parse_page(body: &str, page: &mut PageRule) {
             }
         }
     }
+}
+
+/// Parses a `content` value: strings and `counter(page)` / `counter(pages)`.
+/// Other tokens are skipped. `value` keeps its original case.
+fn content(value: &str) -> Vec<Content> {
+    let mut out = Vec::new();
+    let mut chars = value.trim().chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '"' | '\'' => {
+                let mut text = String::new();
+                while let Some(ch) = chars.next() {
+                    match ch {
+                        ch if ch == c => break,
+                        '\\' => {
+                            // Hex escapes like \A or \2116, else the escaped character.
+                            let mut hex = String::new();
+                            while let Some(h) = chars
+                                .peek()
+                                .filter(|h| h.is_ascii_hexdigit() && hex.len() < 6)
+                            {
+                                hex.push(*h);
+                                chars.next();
+                            }
+                            if hex.is_empty() {
+                                text.extend(chars.next());
+                            } else {
+                                chars.next_if_eq(&' ');
+                                let code =
+                                    u32::from_str_radix(&hex, 16).ok().and_then(char::from_u32);
+                                // A newline has nowhere to go in a one-line box.
+                                text.push(code.filter(|c| *c != '\n').unwrap_or(' '));
+                            }
+                        }
+                        ch => text.push(ch),
+                    }
+                }
+                out.push(Content::Text(text));
+            }
+            c if c.is_alphabetic() => {
+                let mut word = c.to_string();
+                while let Some(ch) =
+                    chars.next_if(|ch| !ch.is_whitespace() && *ch != '"' && *ch != '\'')
+                {
+                    word.push(ch);
+                    if ch == ')' {
+                        break;
+                    }
+                }
+                let word = word.to_ascii_lowercase().replace(' ', "");
+                match word.as_str() {
+                    "counter(page)" => out.push(Content::Page),
+                    "counter(pages)" => out.push(Content::Pages),
+                    _ => {}
+                }
+            }
+            _ => {}
+        }
+    }
+    out
 }
 
 /// `Some(None)` for `auto`.
