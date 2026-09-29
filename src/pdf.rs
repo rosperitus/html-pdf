@@ -294,11 +294,14 @@ fn subset_tag(index: usize, glyphs: impl Iterator<Item = u16>) -> String {
         .collect()
 }
 
-/// `/W` array for the used glyphs, consecutive ids grouped: `[3 [500 600] 10 [250]]`.
+/// `/W` array for the used glyphs, consecutive ids grouped: `[0 [600] 3 [500 600]]`.
+/// `.notdef` (0) is always listed: it is drawn for missing characters, and
+/// without an entry viewers give it the default width of 1000, not the one
+/// layout measured.
 fn widths(f: &FontUse) -> String {
     let mut out = String::from("[");
     let mut prev: Option<u16> = None;
-    for &gid in f.used.keys() {
+    for &gid in std::iter::once(&0).chain(f.used.keys().filter(|&&g| g != 0)) {
         if prev.and_then(|p| p.checked_add(1)) == Some(gid) {
             out.push(' ');
         } else {
@@ -480,7 +483,10 @@ mod tests {
         let used = BTreeMap::from([(3, ' '), (4, '!'), (10, 'x')]);
         let w = widths(&FontUse { font: &font, used });
         assert!(
-            w.starts_with("[3 [") && w.contains("] 10 [") && w.ends_with("]]"),
+            w.starts_with("[0 [")
+                && w.contains("] 3 [")
+                && w.contains("] 10 [")
+                && w.ends_with("]]"),
             "{w}"
         );
     }
