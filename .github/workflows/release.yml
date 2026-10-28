@@ -1,0 +1,119 @@
+name: Release
+
+# Pushing a v* tag (or publishing a GitHub release, which creates one) builds
+# and publishes the crate to crates.io and the WebAssembly package to npm.
+# A manual run only builds and dry-runs the uploads unless "publish" is checked.
+#
+# Required repository secrets:
+#   CARGO_REGISTRY_TOKEN  crates.io API token with publish-new/publish-update
+#   NPM_TOKEN             npm automation token for @rosperitus/html-pdf
+#
+# Both jobs skip versions that are already published, so re-running a failed
+# release is safe.
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Upload the packages instead of only dry-running
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test the crate
+        run: cargo test --workspace
+      - name: Check that the tag matches the manifests
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          rust=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          wasm=$(sed -n 's/^version = "\([^"]*\)"/\1/p' wasm/Cargo.toml | head -n1)
+          npm=$(node -p 'require("./npm/package.json").version')
+          for pair in "Cargo.toml:$rust" "wasm/Cargo.toml:$wasm" "npm/package.json:$npm"; do
+            name=${pair%%:*}
+            version=${pair#*:}
+            if [ "$version" != "$tag" ]; then
+              echo "::error file=$name::version $version does not match tag $GITHUB_REF_NAME"
+              exit 1
+            fi
+          done
+
+  crates-io:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Publish to crates.io
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ secrets.CARGO_REGISTRY_TOKEN }}
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+        run: |
+          version=$(sed -n 's/^version = "\([^"]*\)"/\1/p' Cargo.toml | head -n1)
+          if curl -fsS -A "html-pdf-release (github.com/rosperitus/html-pdf)" \
+            "https://crates.io/api/v1/crates/html_pdf/$version" >/dev/null; then
+            echo "html_pdf $version is already on crates.io, nothing to do"
+          elif [ "$PUBLISH" = "true" ]; then
+            cargo publish --token "$CARGO_REGISTRY_TOKEN"
+          else
+            cargo publish --dry-run
+          fi
+
+  npm:
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-pack@0.15.0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: Build the Node.js and web packages
+        working-directory: npm
+        run: npm run build
+      - name: Test the package
+        working-directory: npm
+        run: npm test
+      - name: Publish to npm
+        working-directory: npm
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PUBLISH: ${{ github.event_name == 'push' || inputs.publish }}
+        run: |
+          version=$(node -p 'require("./package.json").version')
+          if npm view "@rosperitus/html-pdf@$version" version >/dev/null 2>&1; then
+            echo "@rosperitus/html-pdf $version is already on npm, nothing to do"
+          elif [ "$PUBLISH" = "true" ]; then
+            npm publish --provenance --access public
+          else
+            npm publish --dry-run --access public
+          fi
