@@ -37,6 +37,13 @@ const withImage = render('<img src="a.png"><img src="missing.png">', {
 assert.deepEqual(requested, ['a.png', 'missing.png']);
 assert.match(text(withImage), /\/Subtype \/Image/);
 
+// Stylesheets from <link> go through the same callback.
+const styled = render('<link rel="stylesheet" href="file:///s.css"><p>x</p>', {
+  fonts: [font],
+  resources: (src) => (src === 'file:///s.css' ? Buffer.from('p { color: red }') : undefined),
+});
+assert.match(text(styled), /1 0 0 rg/);
+
 // Bad input throws a readable error.
 assert.throws(() => render('x', { fonts: [] }), /no fonts/);
 assert.throws(() => render('x', { fonts: [new Uint8Array(10)] }), /font/);

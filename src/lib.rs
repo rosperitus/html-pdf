@@ -44,9 +44,10 @@ pub struct Options<'a> {
     pub page_size: (f32, f32),
     /// Top, right, bottom, left page margins in points, unless the document sets `@page { margin }`.
     pub margin: [f32; 4],
-    /// Loads `<img src>` values other than `data:` URIs, for example from
-    /// disk. JPEG and PNG are supported; images that fail to load or decode
-    /// are left out.
+    /// Loads `<img src>` values other than `data:` URIs and
+    /// `<link rel="stylesheet" href>` files, for example from disk. The
+    /// attribute value comes as written. JPEG and PNG are supported; images
+    /// and stylesheets that fail to load or decode are left out.
     pub resources: Option<Loader<'a>>,
 }
 
@@ -80,7 +81,9 @@ pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
         return Err(Error::Font("no fonts given".into()));
     }
     let dom = html::parse(html);
-    let styled = style::cascade(&dom);
+    let none = |_: &str| None;
+    let resolve: layout::Resolve = opts.resources.as_deref().unwrap_or(&none);
+    let styled = style::cascade(&dom, resolve);
     let (pw, ph) = styled.page.size.unwrap_or(opts.page_size);
     let [mt, mr, mb, ml] = std::array::from_fn(|i| {
         let along = if i % 2 == 0 { ph } else { pw };
@@ -92,8 +95,6 @@ pub fn render(html: &str, opts: &Options) -> Result<Vec<u8>> {
         }
     });
     let page_h = (ph - mt - mb).max(1.0);
-    let none = |_: &str| None;
-    let resolve: layout::Resolve = opts.resources.as_deref().unwrap_or(&none);
     let lay = layout::layout(
         &dom,
         &styled.styles,

@@ -12,7 +12,7 @@ use crate::html::{Dom, NodeData};
 use crate::image::{self, Image};
 use crate::style::{Size, Style};
 
-/// Loads the bytes behind an `<img src>` that is not a `data:` URI.
+/// Loads the bytes behind an `<img src>` that is not a `data:` URI, or a stylesheet `href`.
 pub type Resolve<'a> = &'a dyn Fn(&str) -> Option<Vec<u8>>;
 
 #[derive(Clone, Debug, PartialEq)]
@@ -1194,7 +1194,7 @@ mod tests {
     fn paged(src: &str, width: f32, page_h: f32) -> Layout {
         let fonts = [Font::new(NOTO).unwrap()];
         let dom = html::parse(src);
-        let styled = style::cascade(&dom);
+        let styled = style::cascade(&dom, &|_| None);
         layout(&dom, &styled.styles, &fonts, width, page_h, &|_| None)
     }
 
@@ -1461,7 +1461,7 @@ mod tests {
         ];
         let fonts = [Font::new(NOTO).unwrap()];
         let dom = html::parse(src);
-        let styled = style::cascade(&dom);
+        let styled = style::cascade(&dom, &|_| None);
         let resolve = |s: &str| (s == "a.jpg").then(|| jpeg.to_vec());
         layout(&dom, &styled.styles, &fonts, width, page_h, &resolve)
     }

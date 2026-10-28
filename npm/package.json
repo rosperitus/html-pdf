@@ -1,6 +1,6 @@
 {
   "name": "@rosperitus/html-pdf",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "HTML and CSS to paginated PDF in WebAssembly. No browser, no native dependencies.",
   "keywords": [
     "pdf",

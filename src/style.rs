@@ -7,6 +7,7 @@ use crate::css::{
     LineHeight, ListStyle, PageRule, Selector, Sheet, TextAlign, VerticalAlign, WhiteSpace,
 };
 use crate::html::{self, Dom, Element, NodeData};
+use crate::layout::Resolve;
 
 /// A computed length: absolute, or a percentage the layout resolves.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -164,7 +165,9 @@ center { text-align: center }
 hr { border: 1px solid gray; margin: .5em 0 }
 ";
 
-pub fn cascade(dom: &Dom) -> Styled {
+/// Styles `dom` from the UA sheet, `<style>` elements and `<link rel=stylesheet>`
+/// files fetched through `load`, in document order.
+pub fn cascade(dom: &Dom, load: Resolve) -> Styled {
     let mut sheet = Sheet::default();
     css::parse_sheet(UA, &mut sheet);
     let ua_rules = sheet.rules.len();
@@ -181,6 +184,20 @@ pub fn cascade(dom: &Dom) -> Styled {
                 })
                 .collect();
             css::parse_sheet(&text, &mut sheet);
+        } else if let NodeData::Element(el) = &node.data
+            && el.tag == "link"
+            && el.attr("rel").is_some_and(|r| {
+                r.split_ascii_whitespace()
+                    .any(|t| t.eq_ignore_ascii_case("stylesheet"))
+            })
+            && let Some(bytes) = el.attr("href").and_then(load)
+        {
+            let text = String::from_utf8_lossy(&bytes);
+            let text = text.strip_prefix('\u{feff}').unwrap_or(&text);
+            match el.attr("media") {
+                Some(m) => css::parse_sheet(&format!("@media {m} {{{text}}}"), &mut sheet),
+                None => css::parse_sheet(text, &mut sheet),
+            }
         }
     }
 
@@ -483,11 +500,50 @@ mod tests {
     /// Style of the first element with `id` attribute `target`.
     fn style_of(src: &str, target: &str) -> Style {
         let dom = html::parse(src);
-        let styled = cascade(&dom);
+        let styled = cascade(&dom, &|_| None);
         let id = (0..dom.nodes.len())
             .find(|&i| dom.element(i).and_then(|e| e.attr("id")) == Some(target))
             .unwrap();
         styled.styles[id].clone()
+    }
+
+    #[test]
+    fn link_stylesheets_load_in_document_order() {
+        let load = |href: &str| match href {
+            "a.css" => Some(b"\xef\xbb\xbfp { color: red } #y { color: lime }".to_vec()),
+            "screen.css" => Some(b"p { color: lime }".to_vec()),
+            _ => None,
+        };
+        let dom = html::parse(
+            "<link rel=stylesheet href=a.css><style>p { color: blue }</style>
+             <link rel='alternate STYLESHEET' href=a.css media=print>
+             <link rel=stylesheet href=screen.css media=screen>
+             <link rel=icon href=a.css><link rel=stylesheet href=missing.css>
+             <p id=x><p id=y>",
+        );
+        let styled = cascade(&dom, &load);
+        let color = |target| {
+            let id = (0..dom.nodes.len())
+                .find(|&i| dom.element(i).and_then(|e| e.attr("id")) == Some(target))
+                .unwrap();
+            styled.styles[id].color
+        };
+        let red = Color {
+            r: 255,
+            g: 0,
+            b: 0,
+            a: 255,
+        };
+        assert_eq!(color("x"), red);
+        assert_eq!(
+            color("y"),
+            Color {
+                r: 0,
+                g: 255,
+                b: 0,
+                a: 255
+            }
+        );
     }
 
     #[test]
@@ -611,7 +667,7 @@ mod tests {
         let dom = html::parse(
             "<style>@page { size: A4 landscape; margin: 2cm 1in } @page :first { size: A5 }</style>",
         );
-        let page = cascade(&dom).page;
+        let page = cascade(&dom, &|_| None).page;
         assert_eq!(page.size, Some((841.89, 595.28)));
         assert_eq!(page.margin[0], Some(Length::Pt(72.0 * 2.0 / 2.54)));
         assert_eq!(page.margin[1], Some(Length::Pt(72.0)));

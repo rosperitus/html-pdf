@@ -49,7 +49,8 @@ let mut opts = Options::new(vec![Font::new(&font)?]);
 opts.page_size = (612.0, 792.0); // US Letter
 opts.margin = [36.0; 4]; // top, right, bottom, left: half an inch
 
-// `<img src>` values other than data: URIs go through this loader.
+// `<img src>` values other than data: URIs and `<link rel="stylesheet">` hrefs
+// go through this loader.
 let dir = std::path::PathBuf::from("assets");
 opts.resources = Some(Box::new(move |src| std::fs::read(dir.join(src)).ok()));
 
@@ -95,7 +96,7 @@ const pdf = render(html, {
   fonts: [regular, bold, italic],   // Uint8Array, Buffer or ArrayBuffer; required
   pageSize: [595.28, 841.89],       // points; A4 by default
   margin: 28.35,                    // points; one number or [top, right, bottom, left]
-  resources: (src) => images.get(src), // bytes for <img src>, or undefined to skip
+  resources: (src) => images.get(src), // bytes for <img src> or <link href>, or undefined to skip
 });
 ```
 
@@ -123,10 +124,13 @@ link.download = 'invoice.pdf';
 link.click();
 ```
 
-`resources` is called synchronously, so fetch the images first:
+`resources` is called synchronously, so fetch images and stylesheets first:
 
 ```js
-const sources = [...doc.querySelectorAll('img')].map((img) => img.getAttribute('src'));
+const sources = [
+  ...[...doc.querySelectorAll('img')].map((img) => img.getAttribute('src')),
+  ...[...doc.querySelectorAll('link[rel~=stylesheet i]')].map((l) => l.getAttribute('href')),
+];
 const images = new Map(
   await Promise.all(sources.map(async (src) => [src, await (await fetch(src)).arrayBuffer()])),
 );
@@ -159,8 +163,9 @@ browsers for `h1`–`h6`, `p`, `div`, `span`, `b`, `strong`, `i`, `em`, `u`, `s`
 implies `html`, `body`, `tbody` and `tr`, closes `p`, `li` and table cells the way browsers do,
 and decodes numeric and common named character references.
 
-**CSS sources.** `<style>` elements and `style` attributes. `@media print` and `@media all`
-apply, other media do not. `<link rel="stylesheet">` is not loaded.
+**CSS sources.** `<style>` elements, `style` attributes and `<link rel="stylesheet">` files
+returned by `resources`, cascaded in document order. `@import` is not followed. `@media print`
+and `@media all` apply, other media do not; the same goes for the `media` attribute of `<link>`.
 
 **Selectors.** Type, `.class`, `#id`, `*`, descendant and child (`>`) combinators, comma
 groups. Specificity, `!important` and `inherit` work as in CSS 2.1. A rule with any other
@@ -205,8 +210,8 @@ the document uses, with a ToUnicode map, so text can be searched and copied.
 
 - No flexbox, grid, floats, `position`, transforms or JavaScript. Page layouts built on
   flexbox fall back to stacked blocks.
-- `<link rel="stylesheet">` and network URLs are not loaded; pass CSS in `<style>` and images
-  through `resources`.
+- Nothing is fetched by the library itself: images and stylesheets come only through
+  `resources`, which gets the URL as written (`file://` and relative paths are up to it).
 - A character missing from the chosen font draws as an empty box: there is no per-glyph
   fallback to another font yet, so emoji and arrows need a font that contains them.
 - No text shaping: no ligatures, kerning or complex scripts (Arabic, Devanagari). Latin,

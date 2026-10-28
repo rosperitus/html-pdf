@@ -6,7 +6,7 @@ use wasm_bindgen::prelude::*;
 
 #[wasm_bindgen(typescript_custom_section)]
 const TYPES: &str = r#"
-/** Font or image bytes: a Uint8Array (Node.js Buffer included) or an ArrayBuffer. */
+/** Font, image or stylesheet bytes: a Uint8Array (Node.js Buffer included) or an ArrayBuffer. */
 export type Bytes = Uint8Array | ArrayBuffer;
 
 export interface RenderOptions {
@@ -23,8 +23,9 @@ export interface RenderOptions {
    */
   margin?: number | [number, number, number, number];
   /**
-   * Returns the bytes behind an <img src> that is not a data: URI, or undefined
-   * to skip the image. Called synchronously: fetch images beforehand.
+   * Returns the bytes behind an <img src> that is not a data: URI or a
+   * <link rel="stylesheet" href> (UTF-8 CSS), or undefined to skip it. Gets the
+   * attribute value as written. Called synchronously: fetch resources beforehand.
    */
   resources?: (src: string) => Bytes | undefined | null;
 }
